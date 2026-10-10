@@ -72,6 +72,12 @@ cost per byte is flat at ~130MB/s all-in. Pre-sizing both buffers was
 tested and measured zero gain: realloc was not the cost. The
 per-row creep is content width, not overhead.
 
+Post-001 (with the `TooLarge` guard), same machine, `--release`:
+`header_only` ~156µs, `tall_null_1000` ~0.50ms,
+`tall_null_20000` ~7.6ms, `tall_null_200000` ~78.7ms — all within
+noise of the pre-guard baseline, so the guard costs nothing
+measurable. `wide_null` ~176µs (first recording).
+
 ## Run-offs (once, not a gate)
 
 Once per serious challenger, same examples, same machine, same

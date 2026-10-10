@@ -34,6 +34,12 @@ pub enum XlsxError {
     EmptyColumns,
     TooManyRows(usize),
     TooManyColumns(usize),
+    /// The finished archive would not fit the 32-bit zip fields:
+    /// `bytes` is its projected length (see `crate::zip`
+    /// `stored_archive_len`).
+    TooLarge {
+        bytes: usize,
+    },
     Infinite {
         column: String,
         row: usize,
@@ -54,6 +60,9 @@ impl std::fmt::Display for XlsxError {
             }
             XlsxError::TooManyColumns(n) => {
                 write!(f, "too many columns {n}: excel stops at 16384")
+            }
+            XlsxError::TooLarge { bytes } => {
+                write!(f, "archive too large {bytes}: zip stops at {}", u32::MAX)
             }
             XlsxError::Infinite { column, row } => {
                 write!(
@@ -226,17 +235,36 @@ pub fn sheet_xml(cols: &[(Column, ColumnData<'_>)]) -> Result<Vec<u8>, XlsxError
 
 /// Assemble the whole `.xlsx` (a zip): static parts plus the sheet.
 pub fn build_xlsx(cols: &[(Column, ColumnData<'_>)]) -> Result<Vec<u8>, XlsxError> {
-    let sheet = sheet_xml(cols)?;
+    let sheet: Vec<u8> = sheet_xml(cols)?;
+    let parts: [(&str, Vec<u8>); 6] = [
+        ("[Content_Types].xml", CONTENT_TYPES.as_bytes().to_vec()),
+        ("_rels/.rels", RELS.as_bytes().to_vec()),
+        ("xl/workbook.xml", WORKBOOK.as_bytes().to_vec()),
+        (
+            "xl/_rels/workbook.xml.rels",
+            WORKBOOK_RELS.as_bytes().to_vec(),
+        ),
+        ("xl/styles.xml", STYLES.as_bytes().to_vec()),
+        ("xl/worksheets/sheet1.xml", sheet),
+    ];
+    // Zip32 ceiling, before any assembly byte is written: every length
+    // and offset below narrows to `u32`/`u16` with no zip64 to catch
+    // it, so refuse past the ceiling rather than truncate. Sheet
+    // formatting performs no narrowing conversion, so this one check
+    // covers every cast on the assembly path.
+    let mut sizes: [(usize, usize); 6] = [(0, 0); 6];
+    for (i, part) in parts.iter().enumerate() {
+        sizes[i] = (part.1.len(), part.0.len());
+    }
+    if !crate::zip::stored_archive_fits(&sizes) {
+        let total: u64 = crate::zip::stored_archive_len(&sizes);
+        let bytes: usize = usize::try_from(total).unwrap_or(usize::MAX);
+        return Err(XlsxError::TooLarge { bytes });
+    }
     let mut zip = ZipWriter::new();
-    zip.add("[Content_Types].xml", CONTENT_TYPES.as_bytes().to_vec());
-    zip.add("_rels/.rels", RELS.as_bytes().to_vec());
-    zip.add("xl/workbook.xml", WORKBOOK.as_bytes().to_vec());
-    zip.add(
-        "xl/_rels/workbook.xml.rels",
-        WORKBOOK_RELS.as_bytes().to_vec(),
-    );
-    zip.add("xl/styles.xml", STYLES.as_bytes().to_vec());
-    zip.add("xl/worksheets/sheet1.xml", sheet);
+    for (name, data) in parts {
+        zip.add(name, data);
+    }
     Ok(zip.finish())
 }
 
@@ -263,4 +291,15 @@ pub fn write_xlsx_file(out: &Path, cols: &[(Column, ColumnData<'_>)]) -> Result<
     })?;
     std::fs::rename(&tmp, out).map_err(|source| WriteError::Rename { source })?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::XlsxError;
+
+    #[test]
+    fn too_large_states_the_ceiling() {
+        let err: String = XlsxError::TooLarge { bytes: usize::MAX }.to_string();
+        assert!(err.contains(&u32::MAX.to_string()), "{err}");
+    }
 }

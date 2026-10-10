@@ -19,6 +19,60 @@ pub fn crc32(data: &[u8]) -> u32 {
     !crc
 }
 
+/// Projected length, in bytes, of the finished stored archive for the
+/// given entry sizes: each entry contributes a 30-byte local header plus
+/// its name and data, a 46-byte central record plus its name, and the
+/// archive closes with the 22-byte end record. Each tuple is
+/// `(data_len, name_len)` in bytes. Pure size arithmetic in `u64`: the
+/// parts already live in memory, so no caller can overflow it.
+pub(crate) fn stored_archive_len(entries: &[(usize, usize)]) -> u64 {
+    let mut total: u64 = 22;
+    for (data_len, name_len) in entries.iter().copied() {
+        let data_len: u64 = data_len as u64;
+        let name_len: u64 = name_len as u64;
+        total += 30 + name_len + data_len;
+        total += 46 + name_len;
+    }
+    total
+}
+
+/// Whether an archive with the given entry sizes fits the 32-bit zip
+/// fields without zip64: every part length, every local header offset,
+/// and the central directory offset and length must each fit `u32`,
+/// and the entry count and every name length must each fit `u16`.
+/// Each tuple is `(data_len, name_len)` in bytes, as in
+/// `stored_archive_len`. Pure size arithmetic, no allocation: the build
+/// path calls it before assembly, so no narrowing cast in
+/// `ZipWriter::finish` below ever truncates.
+///
+/// A fitting total alone would imply the `u32` fields fit (each is
+/// bounded by it), but the count and name checks have no such cover:
+/// thousands of tiny entries, or one long name, overflow their `u16`
+/// fields under a small total. Every category is checked explicitly so
+/// the reviewer can match each check to its cast.
+pub(crate) fn stored_archive_fits(entries: &[(usize, usize)]) -> bool {
+    const U32_MAX: u64 = u32::MAX as u64;
+    const U16_MAX: u64 = u16::MAX as u64;
+    if entries.len() as u64 > U16_MAX {
+        return false;
+    }
+    let mut offset: u64 = 0;
+    let mut central_len: u64 = 0;
+    for (data_len, name_len) in entries.iter().copied() {
+        let data_len: u64 = data_len as u64;
+        let name_len: u64 = name_len as u64;
+        if data_len > U32_MAX || name_len > U16_MAX {
+            return false;
+        }
+        if offset > U32_MAX {
+            return false;
+        }
+        offset += 30 + name_len + data_len;
+        central_len += 46 + name_len;
+    }
+    offset <= U32_MAX && central_len <= U32_MAX
+}
+
 struct Entry {
     name: Vec<u8>,
     data: Vec<u8>,
@@ -125,10 +179,61 @@ fn push_u32(out: &mut Vec<u8>, v: u32) {
 
 #[cfg(test)]
 mod tests {
-    use super::crc32;
+    use super::{crc32, stored_archive_fits, stored_archive_len};
 
     #[test]
     fn crc_is_ieee() {
         assert_eq!(crc32(b"123456789"), 0xCBF4_3926);
+    }
+
+    #[test]
+    fn archive_len_counts_headers_once() {
+        assert_eq!(stored_archive_len(&[]), 22);
+        assert_eq!(stored_archive_len(&[(3, 1)]), 22 + 30 + 1 + 3 + 46 + 1);
+    }
+
+    #[test]
+    fn archive_fits_flips_at_the_u32_ceiling() {
+        let max: usize = u32::MAX as usize;
+        // One entry with an empty name carries 98 bytes of headers
+        // (30 local + 46 central + 22 end), so data fills the last
+        // offset exactly at `max - 30` and one byte more refuses.
+        // Only sizes are decided here; no bytes are allocated.
+        assert!(stored_archive_fits(&[(max - 30, 0)]));
+        assert!(!stored_archive_fits(&[(max - 29, 0)]));
+        assert!(!stored_archive_fits(&[(max - 1, 0)]));
+        assert!(!stored_archive_fits(&[(max, 0)]));
+        assert!(!stored_archive_fits(&[(max + 1, 0)]));
+    }
+
+    #[test]
+    fn archive_fits_accumulates_offsets_across_entries() {
+        let max: usize = u32::MAX as usize;
+        // Two individually small parts whose running offset still
+        // overflows the central directory start.
+        assert!(!stored_archive_fits(&[(max - 30, 0), (1, 0)]));
+        assert!(stored_archive_fits(&[(8, 2), (300, 5)]));
+    }
+
+    #[test]
+    fn archive_fits_bounds_name_lengths_at_u16() {
+        assert!(stored_archive_fits(&[(0, u16::MAX as usize)]));
+        assert!(!stored_archive_fits(&[(0, u16::MAX as usize + 1)]));
+    }
+
+    #[test]
+    fn archive_fits_bounds_entry_count_at_u16() {
+        let over: Vec<(usize, usize)> = vec![(0, 0); u16::MAX as usize + 1];
+        assert!(!stored_archive_fits(&over));
+        let at_max: Vec<(usize, usize)> = vec![(0, 0); u16::MAX as usize];
+        assert!(stored_archive_fits(&at_max));
+    }
+
+    #[test]
+    fn archive_fits_bounds_central_directory_length() {
+        // Every `u16` field fits, but the central directory itself
+        // passes the `u32` ceiling, so the archive refuses.
+        let entries: Vec<(usize, usize)> = vec![(0, u16::MAX as usize); u16::MAX as usize];
+        assert!(!stored_archive_fits(&entries));
     }
 }
