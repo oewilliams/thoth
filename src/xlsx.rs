@@ -155,6 +155,55 @@ const STYLES: &str = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 pub const MAX_ROWS: usize = 1_048_576;
 pub const MAX_COLS: usize = 16_384;
 
+/// Zip32 ceilings, module scope: every part length, every local header
+/// offset, and the central directory offset and length must each fit
+/// `u32`, and the entry count and every name length must each fit
+/// `u16`. (Hoisted from the check below; function scope hid what the
+/// whole build path shares.)
+const U32_MAX: u64 = u32::MAX as u64;
+const U16_MAX: u64 = u16::MAX as u64;
+
+/// Whether an archive with the given entry sizes fits the 32-bit zip
+/// fields without zip64. Each tuple is `(data_len, name_len)` in
+/// bytes, as in `crate::zip::stored_archive_len`. Pure size
+/// arithmetic, no allocation: the build path calls it before
+/// assembly, so no narrowing cast in `ZipWriter::finish` ever
+/// truncates. This check lives at the ingress boundary
+/// ([`build_xlsx`], which owns the entry set), not in the zip module.
+///
+/// A fitting total alone would imply the `u32` fields fit (each is
+/// bounded by it), but the count and name checks have no such cover:
+/// thousands of tiny entries, or one long name, overflow their `u16`
+/// fields under a small total. Every category is checked explicitly
+/// so the reviewer can match each check to its cast, cast for cast:
+///
+/// - `data_len <= u32::MAX` covers each `data.len() as u32`;
+/// - `name_len <= u16::MAX` covers each `name.len() as u16`;
+/// - `len <= u16::MAX` covers each `entries.len() as u16`;
+/// - the running-offset checks cover each `out.len() as u32` (local
+///   offsets and the central directory start);
+/// - the central-length check covers `central_len`.
+fn archive_fits(sizes: &[(usize, usize)]) -> bool {
+    if sizes.len() as u64 > U16_MAX {
+        return false;
+    }
+    let mut offset: u64 = 0;
+    let mut central_len: u64 = 0;
+    for (data_len, name_len) in sizes.iter().copied() {
+        let data_len: u64 = data_len as u64;
+        let name_len: u64 = name_len as u64;
+        if data_len > U32_MAX || name_len > U16_MAX {
+            return false;
+        }
+        if offset > U32_MAX {
+            return false;
+        }
+        offset += 30 + name_len + data_len;
+        central_len += 46 + name_len;
+    }
+    offset <= U32_MAX && central_len <= U32_MAX
+}
+
 /// Build the sheet XML for the given columns (declaration order). Row 1
 /// is the header; data starts at row 2. One monomorphic loop per column
 /// kind. Lengths are checked once here: ragged columns are refused.
@@ -251,17 +300,31 @@ pub fn build_xlsx(cols: &[(Column, ColumnData<'_>)]) -> Result<Vec<u8>, XlsxErro
     // and offset below narrows to `u32`/`u16` with no zip64 to catch
     // it, so refuse past the ceiling rather than truncate. Sheet
     // formatting performs no narrowing conversion, so this one check
-    // covers every cast on the assembly path.
+    // covers every cast on the assembly path (see `archive_fits` for
+    // the cast-for-cast mapping).
     let mut sizes: [(usize, usize); 6] = [(0, 0); 6];
     for (i, part) in parts.iter().enumerate() {
         sizes[i] = (part.1.len(), part.0.len());
     }
-    if !crate::zip::stored_archive_fits(&sizes) {
+    if !archive_fits(&sizes) {
         let total: u64 = crate::zip::stored_archive_len(&sizes);
         let bytes: usize = usize::try_from(total).unwrap_or(usize::MAX);
         return Err(XlsxError::TooLarge { bytes });
     }
-    let mut zip = ZipWriter::new();
+    // Name shape and uniqueness are ingress checks too, stated here
+    // where the entry set is owned: the six names are fixed literals,
+    // so validity holds by construction, and these debug checks pin
+    // it (a wrong new literal trips the debug and test builds;
+    // release pays nothing). The zip module trusts them outright.
+    debug_assert!(parts.iter().all(|(name, _)| !name.starts_with('/')));
+    debug_assert!({
+        let mut unique = true;
+        for (i, (name, _)) in parts.iter().enumerate() {
+            unique &= !parts[..i].iter().any(|(other, _)| *other == *name);
+        }
+        unique
+    });
+    let mut zip = ZipWriter::new(parts.len());
     for (name, data) in parts {
         zip.add(name, data);
     }
@@ -295,11 +358,56 @@ pub fn write_xlsx_file(out: &Path, cols: &[(Column, ColumnData<'_>)]) -> Result<
 
 #[cfg(test)]
 mod tests {
-    use super::XlsxError;
+    use super::{XlsxError, archive_fits};
 
     #[test]
     fn too_large_states_the_ceiling() {
         let err: String = XlsxError::TooLarge { bytes: usize::MAX }.to_string();
         assert!(err.contains(&u32::MAX.to_string()), "{err}");
+    }
+
+    #[test]
+    fn archive_fits_flips_at_the_u32_ceiling() {
+        let max: usize = u32::MAX as usize;
+        // One entry with an empty name carries 98 bytes of headers
+        // (30 local + 46 central + 22 end), so data fills the last
+        // offset exactly at `max - 30` and one byte more refuses.
+        // Only sizes are decided here; no bytes are allocated.
+        assert!(archive_fits(&[(max - 30, 0)]));
+        assert!(!archive_fits(&[(max - 29, 0)]));
+        assert!(!archive_fits(&[(max - 1, 0)]));
+        assert!(!archive_fits(&[(max, 0)]));
+        assert!(!archive_fits(&[(max + 1, 0)]));
+    }
+
+    #[test]
+    fn archive_fits_accumulates_offsets_across_entries() {
+        let max: usize = u32::MAX as usize;
+        // Two individually small parts whose running offset still
+        // overflows the central directory start.
+        assert!(!archive_fits(&[(max - 30, 0), (1, 0)]));
+        assert!(archive_fits(&[(8, 2), (300, 5)]));
+    }
+
+    #[test]
+    fn archive_fits_bounds_name_lengths_at_u16() {
+        assert!(archive_fits(&[(0, u16::MAX as usize)]));
+        assert!(!archive_fits(&[(0, u16::MAX as usize + 1)]));
+    }
+
+    #[test]
+    fn archive_fits_bounds_entry_count_at_u16() {
+        let over: Vec<(usize, usize)> = vec![(0, 0); u16::MAX as usize + 1];
+        assert!(!archive_fits(&over));
+        let at_max: Vec<(usize, usize)> = vec![(0, 0); u16::MAX as usize];
+        assert!(archive_fits(&at_max));
+    }
+
+    #[test]
+    fn archive_fits_bounds_central_directory_length() {
+        // Every `u16` field fits, but the central directory itself
+        // passes the `u32` ceiling, so the archive refuses.
+        let entries: Vec<(usize, usize)> = vec![(0, u16::MAX as usize); u16::MAX as usize];
+        assert!(!archive_fits(&entries));
     }
 }

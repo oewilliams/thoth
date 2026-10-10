@@ -112,5 +112,27 @@ fn cells(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, fill_write, floor, cells);
+/// CRC32 micro-bench: the shipped `crc32` over a statics-sized and a
+/// sheet-sized buffer, so zip-tightening cycles measure this layer
+/// directly instead of inferring it from the floor. One byte is
+/// touched per iteration so no two calls share an input (otherwise
+/// the compiler hoists the pure call out of the loop and the bench
+/// times nothing).
+fn crc32_iter(b: &mut Bencher, buf: &mut [u8]) {
+    b.iter(|| {
+        buf[0] = buf[0].wrapping_add(1);
+        thoth::zip::crc32(buf)
+    });
+}
+
+fn crc(c: &mut Criterion) {
+    let mut group = c.benchmark_group("crc");
+    let mut small = vec![0xA5u8; 4096];
+    group.bench_function("crc32_4k", |b| crc32_iter(b, &mut small));
+    let mut large = vec![0xA5u8; 1 << 20];
+    group.bench_function("crc32_1m", |b| crc32_iter(b, &mut large));
+    group.finish();
+}
+
+criterion_group!(benches, fill_write, floor, cells, crc);
 criterion_main!(benches);

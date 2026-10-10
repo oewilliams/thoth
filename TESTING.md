@@ -78,6 +78,75 @@ Post-001 (with the `TooLarge` guard), same machine, `--release`:
 noise of the pre-guard baseline, so the guard costs nothing
 measurable. `wide_null` ~176µs (first recording).
 
+Post-004 (zip internals tightened: instruction CRC, ingress-held
+validation, pre-sized writer), this machine (Darwin 25.6.0 arm64,
+`RELEASE_ARM64_T8132`), bench profile, commit `bb86154` plus the
+uncommitted 004 work. Criterion means, pre (same machine, same
+profile, two full runs agree within ~2%) then post:
+
+| bench | pre | post | delta |
+|---|---|---|---|
+| `floor/header_only` | 157.7µs | 142.9µs | −9% |
+| `floor/wide_null` | 173.3µs | 144.6µs | −17% |
+| `floor/tall_null_1000` | 508.1µs | 211.3µs | −58% |
+| `floor/tall_null_20000` | 7.564ms | 1.779ms | −76% |
+| `floor/tall_null_200000` | 80.98ms | 18.00ms | −78% |
+
+The tall scales were CRC-bound and the numbers say so: the old
+bitwise CRC cost ~5.8ns per output byte (~60ms on the 10.5MB
+200k sheet), the new one ~0.085ns (~1ms). Small archives gain
+less because CRC was never their cost. Output bytes are
+unchanged: the `golden_small_archive_is_byte_identical` test and
+the per-example verbatim-embed checks pin the bytes.
+
+CRC head-to-head (scratch micro-bench, same machine, release
+profile with `overflow-checks = true`, `codegen-units = 1`,
+best-of-31, sheet-like bytes, 4KB and 4MB agree): bitwise
+5.8ns/B, single table 1.7, slicing-by-8 0.37, ARMv8 `crc32x`
+0.083. Shipped by those numbers: the instruction spelling under
+compile-time `cfg(all(target_arch = "aarch64",
+target_feature = "crc"))` (no runtime detection anywhere), the
+slicing-by-8 spelling everywhere else. The new permanent `crc`
+group records the shipped spelling: `crc32_4k` 342ns
+(0.084ns/B), `crc32_1m` 90.7µs (0.087ns/B, ~11.6GB/s).
+
+Assembler notes (`cargo rustc --release -- --emit asm`, same
+machine; pre vs post):
+
+- R1: the suspicion (bitwise loop is a vectorizer miss) was half
+  wrong. LLVM had already auto-vectorized it (NEON bit-sliced
+  dance, ~24 insns per byte, inlined into `add`) — but "already
+  vectorized" is not "fast": the instruction spelling is one
+  `crc32x` per eight bytes plus an unrolled `crc32b` tail
+  (4-insn word loop, no calls, no table traffic), 69x fewer
+  ns/B. Two scratch rejections on the way: the `__crc32cb`-family
+  names are the Castagnoli polynomial (wrong answers against the
+  IEEE vector — the shipped code uses `__crc32b/d`), and a
+  single-pass slicing-by-8 table build reads unfilled row-0
+  slots (shipped build fills row 0 first).
+- R2: `stored_archive_len` is one map/sum expression over a
+  shared `entry_sizes` helper (also feeding the writer's running
+  total, so the two cannot diverge). The sharper drop is in
+  `finish`, which no longer walks the entries to size itself:
+  the old sizing loop is gone, replaced by a 3-insn
+  running-total load. At dynamic scale the two len spellings are
+  at parity (~10 hot insns/entry — checked arithmetic dominates
+  both under `overflow-checks = true`); the win is structural.
+- R3: with six fixed entries most of `archive_fits` folds away
+  at compile time; the sheet-dependent remainder stays on the
+  path (TooLarge reachable only past 4GB, as before). The
+  cast-to-check mapping is in `xlsx.rs` beside the check.
+- R4: `add` lost its duplicate scan (`memcmp` gone), its assert
+  formatting (`panic_fmt` gone), and its growth path is cold-only
+  (entries `with_capacity` at construction; the `grow_one`
+  branch never fires). The push-helper suspicion was refuted:
+  `push_u16`/`push_u32` already left no `bl` on the `finish`
+  push paths before this cycle, and still leave none — so they
+  stay named helpers (width on the line) and the per-push
+  reserve branches stay as the safe-`Vec` cost: removing them
+  needs `unsafe` for ~nanoseconds per archive, which no
+  measurement justifies.
+
 ## Cell-format benches (pre-cell-optimization, provisional)
 
 One `cargo bench --bench fill_write` run on this machine (Darwin
