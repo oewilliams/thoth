@@ -175,6 +175,36 @@ pub fn tall(n: usize) -> Example {
     }
 }
 
+/// Many integer rows. `n` is small in tests and scaled up in benches.
+pub fn tall_ints(n: usize) -> Example {
+    let t: Vec<i64> = (0..n as i64).collect();
+    let expected: Vec<Vec<Option<f64>>> = (0..n).map(|i| vec![Some(i as f64)]).collect();
+    Example {
+        name: "tall_ints",
+        columns: vec![ExampleColumn::I64 {
+            name: "t".to_string(),
+            data: t,
+        }],
+        expected,
+        expect_error: None,
+    }
+}
+
+/// Many float rows. `n` is small in tests and scaled up in benches.
+pub fn tall_floats(n: usize) -> Example {
+    let px: Vec<f64> = (0..n).map(|i| i as f64 + 0.5).collect();
+    let expected: Vec<Vec<Option<f64>>> = (0..n).map(|i| vec![Some(i as f64 + 0.5)]).collect();
+    Example {
+        name: "tall_floats",
+        columns: vec![ExampleColumn::F64 {
+            name: "px".to_string(),
+            data: px,
+        }],
+        expected,
+        expect_error: None,
+    }
+}
+
 /// Negative: unequal lengths stop the run naming the column.
 pub fn ragged() -> Example {
     Example {
@@ -217,6 +247,8 @@ pub fn all(tall_n: usize) -> Vec<Example> {
         all_null_column(),
         wide(),
         tall(tall_n),
+        tall_ints(tall_n),
+        tall_floats(tall_n),
         ragged(),
         infinite(),
     ]

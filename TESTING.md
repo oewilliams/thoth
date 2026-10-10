@@ -78,6 +78,51 @@ Post-001 (with the `TooLarge` guard), same machine, `--release`:
 noise of the pre-guard baseline, so the guard costs nothing
 measurable. `wide_null` ~176µs (first recording).
 
+## Cell-format benches (pre-cell-optimization, provisional)
+
+One `cargo bench --bench fill_write` run on this machine (Darwin
+25.6.0 arm64, Apple M4), bench profile (inherits `--release`:
+`overflow-checks = true`, `codegen-units = 1`), commit `279adae`
+plus the uncommitted 003 work. Wall times are criterion means;
+output bytes come from a byte-size probe of the same recipes.
+Cell writes are unoptimized at this point: these numbers verify
+this layer (linearity across scales, per-type isolation against
+the floor) and are provisional — the cell-optimization cycle
+re-takes them, it does not inherit them as a baseline.
+
+| bench | wall (mean) | output bytes | MB/s | ns/cell |
+|---|---|---|---|---|
+| `cells/tall_ints_1000` | 0.495ms | 48001 | 97.0 | 495.0 |
+| `cells/tall_floats_1000` | 0.535ms | 50002 | 93.5 | 534.8 |
+| `cells/tall_ints_20000` | 7.807ms | 990005 | 126.8 | 390.4 |
+| `cells/tall_floats_20000` | 9.139ms | 1030006 | 112.7 | 457.0 |
+| `cells/tall_ints_200000` | 82.43ms | 10470009 | 127.0 | 412.1 |
+| `cells/tall_floats_200000` | 91.33ms | 10870010 | 119.0 | 456.7 |
+
+Same-run floor for the isolation delta: `tall_null_1000`
+0.505ms / 48059 bytes / 95.2 MB/s, `tall_null_20000` 7.941ms /
+990065 bytes / 124.7 MB/s, `tall_null_200000` 83.23ms /
+10470071 bytes / 125.8 MB/s.
+
+Format-cost isolation (`cells` minus `floor` `tall_null` at equal
+scale): ints −0.010ms / −9.9ns per cell / −58 bytes at 1k,
+−0.134ms / −6.7ns / −60 bytes at 20k, −0.806ms / −4.0ns / −62
+bytes at 200k; floats +0.030ms / +29.9ns / +1943 bytes at 1k,
++1.198ms / +59.9ns / +39941 bytes at 20k, +8.103ms / +40.5ns /
++399939 bytes at 200k. The near-zero int delta is a shape
+artifact, not free formatting: the floor bench writes two blank
+columns per row while each `cells` bench writes one formatted
+column. Normalized per cell (formatted cell vs blank cell):
+ints +243ns / +192ns / +204ns, floats +282ns / +258ns / +249ns
+at 1k / 20k / 200k. Per-cell cost is flat across scales within
+each type (1k runs higher: fixed zip/skeleton cost over fewer
+rows), so formatted cost is linear in rows; floats run ~45–65ns
+per cell above ints at scale.
+
+String/bool body cells have no benches yet: writer, store, and
+store reader cover `I64`/`F64` only, so their benches wait on a
+feature cycle.
+
 ## Run-offs (once, not a gate)
 
 Once per serious challenger, same examples, same machine, same

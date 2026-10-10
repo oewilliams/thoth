@@ -95,5 +95,22 @@ fn floor(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, fill_write, floor);
+/// Formatted cells at three scales: per-type tall examples through the
+/// same fill-plus-write path. The deltas against the `floor`
+/// `tall_null` benches at equal scale isolate the value-formatting
+/// cost; the three scales check formatted cost is linear in rows.
+fn cells(c: &mut Criterion) {
+    let mut group = c.benchmark_group("cells");
+    for n in [1_000, 20_000, 200_000] {
+        let ints = common::tall_ints(n);
+        let ints_id = format!("tall_ints_{n}");
+        group.bench_function(&ints_id, |b| write_iter(b, &ints));
+        let floats = common::tall_floats(n);
+        let floats_id = format!("tall_floats_{n}");
+        group.bench_function(&floats_id, |b| write_iter(b, &floats));
+    }
+    group.finish();
+}
+
+criterion_group!(benches, fill_write, floor, cells);
 criterion_main!(benches);
