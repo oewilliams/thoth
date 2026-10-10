@@ -1,0 +1,4 @@
+# Pinned because codegen is part of the measured surface: an unpinned
+# drift would move numbers nobody changed.
+[toolchain]
+channel = "1.93.1"

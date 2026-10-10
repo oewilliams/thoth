@@ -1,0 +1,20 @@
+[package]
+name = "thoth"
+version = "0.0.1"
+edition = "2024"
+description = "A fast xlsx writer from a declared schema: typed columns to sheet XML with nothing decided per cell."
+license-file = "LICENSE.md"
+
+# Wrong is worse than stopped: overflow panics in every profile.
+[profile.release]
+overflow-checks = true
+# One codegen unit: default CGU partitioning shuffles hot-path layout
+# build to build; pinned rather than left to luck.
+codegen-units = 1
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "fill_write"
+harness = false
