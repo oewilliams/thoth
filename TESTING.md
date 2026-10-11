@@ -61,7 +61,8 @@ harnesses: `examples/bench.rs` for a quick smoke
 (`cargo run --release --example bench`) and `benches/fill_write.rs`
 under criterion (`cargo bench`) for scored runs, including the `floor`
 group (headers alone, blank cells at several scales: everything except
-cell formatting).
+cell formatting). Criterion 0.5 takes one filter only, and a directly
+invoked binary needs the `--bench` flag with it (`./target/release/deps/fill_write-<hash> floor --bench`): without the flag it runs test-only mode, prints bare `Testing/Success`, and writes no estimates. After any bench run, confirm the estimates file mtime moved before quoting a number.
 
 Floor baseline, this machine, `--release`: `header_only` ~156µs,
 `tall_null_1000` ~0.5ms, `tall_null_20000` ~7.6ms,
@@ -98,6 +99,18 @@ bitwise CRC cost ~5.8ns per output byte (~60ms on the 10.5MB
 less because CRC was never their cost. Output bytes are
 unchanged: the `golden_small_archive_is_byte_identical` test and
 the per-example verbatim-embed checks pin the bytes.
+
+Post-005 (row sharing reaches blank cells too), same machine,
+bench profile, commit `1a3c0e5`, criterion means with
+criterion's own baseline comparison: `floor/header_only`
+142.1µs (+1.1%, no change), `floor/wide_null` 146.0µs (−0.4%,
+no change), `floor/tall_null_1000` 169.5µs (−20.2%),
+`floor/tall_null_20000` 1.151ms (−40.5%),
+`floor/tall_null_200000` 11.52ms (−34.6%, wide interval
+8.8–15.9ms — this scale stays provisional until re-taken).
+Small archives sit still because CRC was never their cost;
+tall blanks move because every blank cell used to format the
+row digits into its own `String`.
 
 CRC head-to-head (scratch micro-bench, same machine, release
 profile with `overflow-checks = true`, `codegen-units = 1`,
@@ -304,6 +317,59 @@ view (diff-derived, formatted cell vs blank cell): ints +243ns /
 single-blank-column floor bench — queued for the next bench
 touch. Totals are linear in rows within each type; floats cost
 more than ints at every scale.
+
+Post-005 re-take, same machine, bench profile, commit
+`1a3c0e5`, criterion means (change is criterion's own
+comparison against its stored 003 baseline, all p < 0.05;
+bytes are the unchanged 003 recipes):
+
+| bench | wall (mean) | output bytes | MB/s |
+|---|---|---|---|
+| `cells/tall_ints_1000` | 0.164ms | 48001 | 292.6 |
+| `cells/tall_floats_1000` | 0.200ms | 50002 | 249.9 |
+| `cells/tall_ints_20000` | 0.870ms | 990005 | 1138.3 |
+| `cells/tall_floats_20000` | 1.886ms | 1030006 | 546.1 |
+| `cells/tall_ints_200000` | 10.18ms | 10470009 | 1029.0 |
+| `cells/tall_floats_200000` | 17.07ms | 10870010 | 636.6 |
+
+Changes: ints −66.7% / −88.5% / −87.7%, floats −63.0% /
+−77.7% / −81.3% at 1k / 20k / 200k. These deltas bundle two
+cycles — 004's hardware CRC (never re-taken for `cells`
+until now) with 005's row sharing, integer writer, and scan
+fusion. The scratch A/B isolates the 005 share on the
+formatting path (2.8x ints, 1.5x floats in-memory,
+byte-identical). Still pre-`f64`-backend: floats keep one
+`String` per cell, and the ~1.7x float-vs-int gap at 200k
+(17.07 vs 10.18ms) is the cell cycle's named target.
+
+Post-006 (`f64` write-through: values format via `Display`
+straight into the sheet, no temp `String` per cell), this
+machine (Darwin 25.6.0 arm64, `RELEASE_ARM64_T8132`), bench
+profile, commit `1a3c0e5` plus the uncommitted 006 work.
+Criterion means (change is criterion's own comparison
+against its stored baseline; bytes are the unchanged 003
+recipes):
+
+| bench | wall (mean) | output bytes | MB/s |
+|---|---|---|---|
+| `cells/tall_floats_1000` | 0.187ms | 50002 | 266.8 |
+| `cells/tall_floats_20000` | 1.324ms | 1030006 | 777.9 |
+| `cells/tall_floats_200000` | 12.57ms | 10870010 | 864.5 |
+
+Changes vs the recorded Post-005 means (0.200ms, 1.886ms,
+17.07ms): −6.3% / −29.8% / −26.3% at 1k / 20k / 200k — no
+regression at any scale; removing the last per-cell
+allocation on the float path moves every scale, and the
+200k float-vs-int gap narrows to ~1.2x (12.57 vs 10.18ms).
+Criterion's own calls: −5.56% at 1k and −35.0% at 20k
+(both p < 0.05; the 20k baseline is its stored ~2.04ms).
+The 200k re-take reads 12.57ms with a tight interval
+([12.44, 12.74]ms). One earlier 200k pass read 19.95ms
+with a [15.5, 25.6]ms interval (p = 0.34, no change
+detected) under evident machine noise; the immediate
+tight re-take above supersedes it. Output bytes are
+unchanged: round-trip, verbatim-embed, golden, and pins
+green unmodified, so float bytes are identical.
 
 String/bool body cells have no benches yet: writer, store, and
 store reader cover `I64`/`F64` only, so their benches wait on a

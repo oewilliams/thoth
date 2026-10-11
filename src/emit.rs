@@ -3,6 +3,7 @@
 //! absence, not a number.
 
 use crate::contract::NULL_I64;
+use std::fmt::Write as _;
 
 /// Excel column letters: 0 -> A, 25 -> Z, 26 -> AA.
 pub fn col_letters(mut n: usize) -> String {
@@ -29,14 +30,6 @@ pub fn escape_into(out: &mut String, text: &str) {
             _ => out.push(c),
         }
     }
-}
-
-/// Format one f64 for Excel: shortest round-trip text. NaN is handled by
-/// the caller (blank cell); infinities are refused there, never written.
-pub fn format_f64(v: f64) -> String {
-    // `to_string` is `ryu`-shortest in current Rust; the shortest
-    // correct text is the contract, the backend is an implementation pick.
-    v.to_string()
 }
 
 /// Header cell: bold (`s="1"`) inline string.
@@ -125,8 +118,10 @@ pub fn i64_cell(out: &mut String, col_letters: &str, row: &str, v: i64) {
 }
 
 /// One numeric f64 cell. NaN -> blank; infinite -> caller refuses.
-/// `row` is the row digits, formatted once and shared across the
-/// row's cells.
+/// The value formats through `Display` straight into `out`, so the
+/// bytes are identical to the old temp-`String` spelling by
+/// construction. `row` is the row digits, formatted once and shared
+/// across the row's cells.
 #[inline]
 pub fn f64_cell(out: &mut String, col_letters: &str, row: &str, v: f64) {
     if v.is_nan() {
@@ -139,7 +134,10 @@ pub fn f64_cell(out: &mut String, col_letters: &str, row: &str, v: f64) {
         out.push_str(col_letters);
         out.push_str(row);
         out.push_str("\"><v>");
-        out.push_str(&format_f64(v));
+        if write!(out, "{v}").is_err() {
+            // `String` never fails `fmt::Write`: unreachable by construction.
+            debug_assert!(false);
+        }
         out.push_str("</v></c>");
     }
 }
