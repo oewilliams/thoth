@@ -64,6 +64,17 @@ group (headers alone, blank cells at several scales: everything except
 cell formatting). Criterion 0.5 takes one filter only, and a directly
 invoked binary needs the `--bench` flag with it (`./target/release/deps/fill_write-<hash> floor --bench`): without the flag it runs test-only mode, prints bare `Testing/Success`, and writes no estimates. After any bench run, confirm the estimates file mtime moved before quoting a number.
 
+Spell-agreement rule (standing protocol from cycle 010): a number is
+recorded only after two agreeing quiet-spell reads — same binary, same
+spell, means within 3% of each other, each with a tight interval (CI
+half-width under 5% of the mean) and severe-outlier share at or under
+10%. Same spell means consecutive runs in one session with box state
+re-checked between them; a spell interrupted by a load spike is a new
+spell. Noisy passes are discarded and documented to the
+Post-006/007/009 standard: discarded means, intervals, and outlier
+shares quoted in the entry with a supersede note, never silently
+dropped.
+
 Floor baseline, this machine, `--release`: `header_only` ~156µs,
 `tall_null_1000` ~0.5ms, `tall_null_20000` ~7.6ms,
 `tall_null_200000` ~80.5ms. Cost per row creeps ~346 to ~401ns across
@@ -499,6 +510,83 @@ on any path — every helper body is straight-line pushes.
 String/bool body cells have no benches yet: writer, store, and
 store reader cover `I64`/`F64` only, so their benches wait on a
 feature cycle.
+
+Post-010 (harness harden: setup out of the clock, R1), this machine
+(Darwin 25.6.0 arm64, Apple M4), bench profile (inherits `--release`:
+`overflow-checks = true`, `codegen-units = 1`), commit `ae8eaae`
+plus the uncommitted 010 work. Same binary throughout (direct-binary
+runs, single filter, `--bench` flag; estimates mtimes confirmed moved
+before quoting). Timed lines, reviewer-confirmed: the criterion
+closure holds exactly
+`thoth::xlsx::write_xlsx_file(&path, &cols).unwrap();` and nothing
+else; the examples clock spans the same call between `Instant::now()`
+and `elapsed` (`writer_columns()` and both debris removals sit above
+the clock). Box at bench time: 42 days uptime, 1-minute load
+1.3–3.3 across the spells, free pages ~410k–429k plus ~6–12k
+speculative (16KB pages, `vm_stat`), disk 78% full.
+
+| bench | read A (mean [CI], outliers) | read B (mean [CI], outliers) | output bytes | MB/s A / B |
+|---|---|---|---|---|
+| `cells/tall_floats_200000` | 11.580ms [11.410, 11.800], 9% (8% severe) | 11.714ms [11.497, 12.004], 13% (10% severe) | 10870010 | 938.7 / 928.0 |
+| `cells/tall_ints_200000` | 6.578ms [6.404, 6.798], 8% (7% severe) | 6.646ms [6.464, 6.868], 9% (8% severe) | 10470009 | 1591.7 / 1575.4 |
+| `floor/tall_null_200000` | no qualifying read (see gaps) | — | 10470071 | — |
+
+Floats: full protocol pass. A and B are consecutive runs in one
+session with box state re-checked between them (loads 2.30 / 2.40),
+means 1.16% apart, both CIs tight (half-widths 1.7% / 2.2%),
+severe-outlier shares 8% / 10%. Span 0.134ms, far under the 1.0ms
+bar against the Post-009 same-binary span (2.39ms). Vs the recorded
+Post-009 mean (12.553ms, CI [12.367, 12.811]): −7.8% / −6.7%, both
+reads below the old interval — a moved clock, not a faster library:
+`src/` is untouched and the bytes are identical (see below), so the
+delta is harness accounting (setup left the clock) plus machine
+state. Same speed, tighter clock; no library speedup claimed.
+
+Ints: protocol gap named — A and B agree (1.02% apart, tight CIs at
+3.0% / 3.1% half-width, severe shares 7% / 8%) and a third
+qualifying read agrees with them (6.700ms [6.517, 6.926], 10%
+total / 8% severe; three-read band 1.8%), all same binary with box
+state re-checked — but noisy spells intervened, so A and B are not
+consecutive runs and strict same-spell consecutiveness is not met.
+Span 0.068ms. Both reads sit below the Post-009 same-binary spell
+range (8.25–10.64ms); same attribution as floats, no library speedup
+claimed.
+
+Floor: no number claimed — no read in ~30 attempts met both gates
+at once (best tight-CI reads 6.96ms [6.74, 7.21] / 7.04ms [6.85,
+7.28] / 7.09ms [6.93, 7.28] all carried 12–15% outliers). Evidence
+about the box, not a license to loosen the rule: the control is
+re-taken next cycle. Lower edge held ~6.9–7.1ms all evening.
+
+Discarded passes (superseded, Post-006/007/009 standard): five
+full-group `200000` passes read high with wide CIs and 10–20%
+outliers (ints means 7.76–11.88ms, CIs spanning ~5ms; floats
+13.36–16.23ms; floor 7.08–10.52ms). Single-bench re-takes added
+~25 ints attempts (means 6.45–23.69ms; all discarded on wide CIs
+or 11–20% outliers except the three qualifying reads above),
+~14 further floats attempts (11.58–18.12ms; the pair above the only
+qualifiers) and ~24 further floor attempts (7.09–19.74ms, none
+qualifying). Criterion's own change% calls are not load-bearing:
+its stored baselines were churned by this cycle's noisy passes
+(the Post-007/009 precedent). The unlink probe explains the moved
+clocks: `/tmp` scratch, 200 unlinks of 10MB files on the same
+volume as the bench temp dir — median 164µs, p90 503µs, mean
+3.4ms with a heavy tail. The old harness timed two such unlinks
+per iteration; their tail is the old clock's noise and much of its
+level. Removing them narrows the span and lowers the mean by
+accounting, not by code.
+
+Byte-identity: `sh check.sh` with `CARGO_HOME=/tmp/cargo-home`
+green; round-trip, verbatim-embed, golden
+(`golden_small_archive_is_byte_identical`), pins
+(`static_parts_are_pinned`, `sheet_cap_holds`), emit spelling
+tests, and the four `sealed.rs` locks all green unmodified; `git
+diff --stat tests/ src/` empty. Byte-size probe matches the 003
+figures byte for byte: 48001 / 50002, 990005 / 1030006 (scratch
+crate in `/tmp`), 10470009 / 10870010 (hardened `examples/bench.rs`
+run, which also timed 7.2ms / 12.0ms single-pass, consistent with
+the criterion quiet edges). One changed byte would have failed
+the cycle; none changed.
 
 ## Run-offs (once, not a gate)
 

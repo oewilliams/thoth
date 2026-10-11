@@ -17,8 +17,8 @@ fn bench(example: &common::Example) {
         example.name
     ));
     let _ = std::fs::remove_file(&path);
-    let start = Instant::now();
     let cols = example.writer_columns();
+    let start = Instant::now();
     thoth::xlsx::write_xlsx_file(&path, &cols).unwrap();
     let elapsed = start.elapsed();
     let bytes = std::fs::metadata(&path).unwrap().len();

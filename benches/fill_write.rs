@@ -21,16 +21,24 @@ fn write_path(name: &str) -> std::path::PathBuf {
     ))
 }
 
-/// One untimed-setup, timed-write iteration: fill the template and move
-/// the bytes to disk, then clear the debris.
+/// One untimed-setup, timed-write iteration: per-iteration debris
+/// removal and column construction run in setup, outside the clock.
+/// The clock covers exactly the `write_xlsx_file` call (fill plus
+/// write); one trailing cleanup after the run clears the last file.
 fn write_iter(b: &mut Bencher, example: &common::Example) {
-    b.iter(|| {
-        let path = write_path(example.name);
-        let _ = std::fs::remove_file(&path);
-        let cols = example.writer_columns();
-        thoth::xlsx::write_xlsx_file(&path, &cols).unwrap();
-        let _ = std::fs::remove_file(&path);
-    });
+    b.iter_with_setup(
+        || {
+            let path = write_path(example.name);
+            let _ = std::fs::remove_file(&path);
+            let cols = example.writer_columns();
+            (path, cols)
+        },
+        |(path, cols)| {
+            thoth::xlsx::write_xlsx_file(&path, &cols).unwrap();
+        },
+    );
+    let path = write_path(example.name);
+    let _ = std::fs::remove_file(&path);
 }
 
 fn fill_write(c: &mut Criterion) {
