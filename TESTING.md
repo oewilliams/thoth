@@ -417,6 +417,85 @@ supersede them. Output bytes are unchanged: round-trip,
 verbatim-embed, golden, and pins green on the shipped tree,
 so float bytes are identical.
 
+Post-009 (skeleton factor: the four tag spellings in
+`i64_cell` / `f64_cell` into four tiny private `#[inline]`
+helpers — `cell_open`, `blank_close`, `value_open`,
+`value_close` — three entry groups, no mode flag), this machine
+(Darwin 25.6.0 arm64, Apple M4), bench profile, commit
+`77d2699` plus the uncommitted 009 work. Criterion means
+(change is criterion's own comparison against its stored
+baseline; bytes are the unchanged 003 recipes, re-probed at
+bench scale this cycle: 48001 / 50002, 990005 / 1030006,
+10470009 / 10870010):
+
+| bench | wall (mean) | output bytes | MB/s |
+|---|---|---|---|
+| `cells/tall_ints_1000` | 0.165ms | 48001 | 291.6 |
+| `cells/tall_floats_1000` | 0.185ms | 50002 | 270.6 |
+| `cells/tall_ints_20000` | 0.881ms | 990005 | 1123.3 |
+| `cells/tall_floats_20000` | 1.245ms | 1030006 | 827.5 |
+| `cells/tall_ints_200000` | 8.248ms | 10470009 | 1269.4 |
+| `cells/tall_floats_200000` | 12.553ms | 10870010 | 865.9 |
+
+Changes vs the recorded means (ints Post-005: 0.164ms,
+0.870ms, 10.18ms; floats Post-007: 0.187ms, 1.257ms,
+12.62ms): ints +0.4% / +1.3% / −19.0%, floats −1.2% /
+−1.0% / −0.5% at 1k / 20k / 200k — no regression at any
+scale. (The 200k-int −19.0% is machine spread, not a code
+effect: same-binary reads across the spell ran 8.25–10.64ms,
+so no speedup is claimed — within noise, faster than
+recorded.) Criterion's own calls on the quoted runs: ints
++0.8% (p = 0.45, no change) / −22.4% (p = 0.07, no change) /
+−20.0% (p = 0.11, no change); floats −7.3% / −15.9% /
+−36.1% (all p <= 0.05, but their stored baselines were
+churned by this cycle's own noisy passes, so the
+recorded-mean comparison above is the load-bearing one —
+the Post-007 precedent).
+
+Floor re-take, same machine/profile/commit, criterion
+means: `floor/header_only` 143.56µs (+1.0% vs recorded
+142.1µs; criterion +1.5%, p = 0.24, no change),
+`floor/wide_null` 143.00µs (−2.1% vs 146.0µs; criterion
+−0.3%, p = 0.74, no change), `floor/tall_null_1000`
+175.46µs (+3.5% vs 169.5µs; criterion +1.4%, p = 0.86, no
+change), `floor/tall_null_20000` 1.1095ms (−3.6% vs
+1.151ms; criterion −8.3%, p = 0.47, no change),
+`floor/tall_null_200000` 10.062ms (−12.7% vs 11.52ms;
+criterion −6.4%, p = 0.75, no change; agreeing second
+read 10.108ms).
+
+Noisy passes superseded the same way as Post-006's and
+Post-007's: the first full-group passes read high with
+11–21% severe outliers and CIs spanning ±10–50%
+(`cells/tall_floats_20000` 1.34–1.91ms,
+`cells/tall_floats_200000` 14.37–19.64ms,
+`floor/tall_null_200000` 21.39ms with CI [12.8, 32.7]ms).
+The environment proof is a control, not a re-take: the
+unmodified HEAD tree in a scratch worktree, benched in
+the same spell, read `tall_floats_20000` 1.2727ms tight
+([1.2548, 1.2942]ms, 13% outliers — the recorded 1.257ms
+within 1.2%) while the factored tree was reading
+1.34–1.91ms minutes earlier; the factored tree's
+quiet-spell re-takes (1.2447ms [1.2289, 1.2641]ms,
+12.553ms [12.367, 12.811]ms, both ≤9% outliers) agree
+with the control, so the elevation was the spell, not
+the change. Two same-spell reads that agree with each
+other and with the recorded mean supersede the noisy
+ones. Output bytes are unchanged: the `/tmp` byte-size
+probe of the bench-scale recipes matches the 003 figures
+byte for byte, and round-trip, verbatim-embed, golden,
+and pins are green on the shipped tree.
+
+Codegen note (`cargo rustc --release -- --emit asm`, same
+machine): the helpers inline at three of the four
+`cell_open` sites; the one outlined call is a blank arm
+(`bl cell_open` followed immediately by the inlined
+`"\"/>"`), and `blank_close` / `value_open` /
+`value_close` leave no outline anywhere. No new branch
+on any path — every helper body is straight-line pushes.
+`#[inline]` hints only, per the carried ruling; no
+`inline(always)`.
+
 String/bool body cells have no benches yet: writer, store, and
 store reader cover `I64`/`F64` only, so their benches wait on a
 feature cycle.

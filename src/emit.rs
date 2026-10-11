@@ -98,23 +98,42 @@ fn push_magnitude(out: &mut String, mut mag: u64) {
     }
 }
 
+/// Shared cell-tag skeleton (open, blank-close, value-wrap); values and null tests stay per-kind.
+#[inline]
+fn cell_open(out: &mut String, col_letters: &str, row: &str) {
+    out.push_str("<c r=\"");
+    out.push_str(col_letters);
+    out.push_str(row);
+}
+
+#[inline]
+fn blank_close(out: &mut String) {
+    out.push_str("\"/>");
+}
+
+#[inline]
+fn value_open(out: &mut String) {
+    out.push_str("\"><v>");
+}
+
+#[inline]
+fn value_close(out: &mut String) {
+    out.push_str("</v></c>");
+}
+
 /// One numeric i64 cell at (col, row). Null sentinel -> blank cell.
 /// `row` is the row digits, formatted once and shared across the
 /// row's cells.
 #[inline]
 pub fn i64_cell(out: &mut String, col_letters: &str, row: &str, v: i64) {
     if v == NULL_I64 {
-        out.push_str("<c r=\"");
-        out.push_str(col_letters);
-        out.push_str(row);
-        out.push_str("\"/>");
+        cell_open(out, col_letters, row);
+        blank_close(out);
     } else {
-        out.push_str("<c r=\"");
-        out.push_str(col_letters);
-        out.push_str(row);
-        out.push_str("\"><v>");
+        cell_open(out, col_letters, row);
+        value_open(out);
         push_i64(out, v);
-        out.push_str("</v></c>");
+        value_close(out);
     }
 }
 
@@ -124,20 +143,16 @@ pub fn i64_cell(out: &mut String, col_letters: &str, row: &str, v: i64) {
 #[inline]
 pub fn f64_cell(out: &mut String, col_letters: &str, row: &str, v: f64) {
     if v.is_nan() {
-        out.push_str("<c r=\"");
-        out.push_str(col_letters);
-        out.push_str(row);
-        out.push_str("\"/>");
+        cell_open(out, col_letters, row);
+        blank_close(out);
     } else {
-        out.push_str("<c r=\"");
-        out.push_str(col_letters);
-        out.push_str(row);
-        out.push_str("\"><v>");
+        cell_open(out, col_letters, row);
+        value_open(out);
         if write!(out, "{v}").is_err() {
             // `String` never fails `fmt::Write`: unreachable by construction.
             debug_assert!(false);
         }
-        out.push_str("</v></c>");
+        value_close(out);
     }
 }
 
