@@ -371,6 +371,52 @@ tight re-take above supersedes it. Output bytes are
 unchanged: round-trip, verbatim-embed, golden, and pins
 green unmodified, so float bytes are identical.
 
+Post-007 (f64 tune-up: R1 comment trim and R2 import regroup on
+the 006 surface; R3 keeps `write!(out, "{v}")`), this machine
+(Darwin 25.6.0 arm64, `RELEASE_ARM64_T8132`), bench profile,
+commit `1cbe856` plus the uncommitted 007 work. Criterion
+means (change is criterion's own comparison against its stored
+baseline; bytes are the unchanged 003 recipes):
+
+| bench | wall (mean) | output bytes | MB/s |
+|---|---|---|---|
+| `cells/tall_floats_1000` | 0.187ms | 50002 | 266.9 |
+| `cells/tall_floats_20000` | 1.257ms | 1030006 | 819.2 |
+| `cells/tall_floats_200000` | 12.62ms | 10870010 | 861.0 |
+
+Changes vs the recorded Post-006 means (0.187ms, 1.324ms,
+12.57ms): +0.2% / −5.0% / +0.4% at 1k / 20k / 200k — no
+regression at any scale. The 20k −5.0% is inter-session
+variance, not a code effect: the shipped tree differs from
+Post-006 only by deleted comment lines and reordered imports,
+neither of which reaches codegen, and the two tight 20k
+re-takes agree with each other (1.2556ms then 1.2573ms, CIs
+[1.2408, 1.2739] and [1.2399, 1.2783]ms). Criterion's own
+calls on the quoted runs: −0.62% at 1k (p = 0.45, no change;
+the stored baseline there is the positional-spelling A/B run
+below, so this is the within-noise tie reading), −24.3% at
+20k and −20.7% at 200k (both p < 0.05, but their stored
+baselines were churned by this cycle's own noisy passes, so
+the recorded-mean comparison above is the load-bearing one).
+R3 identity first: `/tmp` scratch probe over 4024 values (22
+specials incl. both zeros, min-normal, max-subnormal
+boundary, plus 4002 ±1000 quarter-steps) across `"{v}"`,
+`"{}", v`, and `to_string()` bare plus both `write!`
+spellings inside the `<v>…</v>` wrapper — zero mismatches;
+signed-zero bytes `"-0"` on both `write!` spellings. Scratch
+best-of-61 timing at parity (~200µs vs ~198µs, ~1.3%), and
+the criterion 1k A/B agrees (inline 187.33µs vs positional
+188.82µs, overlapping CIs) — tie, so the current spelling
+stays per the tie rule; R3 ships no code change. Noisy
+passes superseded the same way as Post-006's: one 20k pass
+(1.71ms, CI [1.38, 2.15]ms, 22% outliers) and four 200k
+passes (means 14.9–17.3ms, CIs spanning ~6ms, 11–21%
+outliers) under evident machine noise; the tight re-takes
+above (1k [185.47, 190.11]µs, 200k [12.48, 12.79]ms)
+supersede them. Output bytes are unchanged: round-trip,
+verbatim-embed, golden, and pins green on the shipped tree,
+so float bytes are identical.
+
 String/bool body cells have no benches yet: writer, store, and
 store reader cover `I64`/`F64` only, so their benches wait on a
 feature cycle.

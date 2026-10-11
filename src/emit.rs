@@ -2,8 +2,9 @@
 //! branch on type. Nulls (`i64::MIN`, NaN) emit a blank `<c/>` —
 //! absence, not a number.
 
-use crate::contract::NULL_I64;
 use std::fmt::Write as _;
+
+use crate::contract::NULL_I64;
 
 /// Excel column letters: 0 -> A, 25 -> Z, 26 -> AA.
 pub fn col_letters(mut n: usize) -> String {
@@ -118,10 +119,8 @@ pub fn i64_cell(out: &mut String, col_letters: &str, row: &str, v: i64) {
 }
 
 /// One numeric f64 cell. NaN -> blank; infinite -> caller refuses.
-/// The value formats through `Display` straight into `out`, so the
-/// bytes are identical to the old temp-`String` spelling by
-/// construction. `row` is the row digits, formatted once and shared
-/// across the row's cells.
+/// `row` is the row digits, formatted once and shared across the
+/// row's cells.
 #[inline]
 pub fn f64_cell(out: &mut String, col_letters: &str, row: &str, v: f64) {
     if v.is_nan() {
