@@ -147,6 +147,117 @@ machine; pre vs post):
   needs `unsafe` for ~nanoseconds per archive, which no
   measurement justifies.
 
+## Post-005 (foundation tighten: seal, words, locks)
+
+Proof-led cycle on the `xlsx.rs` tail: each lock below failed
+before its fix (or, where marked, pins current behavior), on
+this machine (Darwin 25.6.0 arm64), release profile
+(`overflow-checks = true`, `codegen-units = 1`), commit
+`dba821b` plus the uncommitted 005 work.
+
+- Seal: `tests/sealed.rs` locks refusal and success — existing
+  destination refused with `Exists` and left byte-identical,
+  pre-existing temp refused with `TempExists` with no
+  destination created, success lands beside the target and
+  renames, missing file name refused with the new `NoFileName`.
+- Words: `Infinite.row` is the 1-based Excel row (header is row
+  1; the `infinite` example refuses at row 3, pinned in
+  `infinite_names_the_excel_row`). `TooManyRows` states data
+  rows and the resulting sheet total (pinned in
+  `too_many_rows_states_data_and_total`). `Rename` names both
+  ends of the move (pinned in `rename_names_tmp_and_out`; a
+  rename failure is inducible only by the filesystem, so the
+  construction site is review evidence, not a test).
+- Statics: `static_parts_are_pinned` trips on any edit to the
+  five frozen blobs (`[Content_Types].xml` 680/`0xCC79080A`,
+  `_rels/.rels` 296/`0x82C75906`, `xl/workbook.xml`
+  282/`0xD4738FA2`, `xl/_rels/workbook.xml.rels`
+  424/`0x8A9642E0`, `xl/styles.xml` 708/`0x24A3B074`). Pins
+  captured from the pre-lock tree; verified genuine by mutation
+  (one-byte `STYLES` edit fails the test, revert greens it).
+  The checksum is the crate's own `crc32` used as a change
+  detector; value correctness stays with the round-trip suite.
+- Capacity: `sheet_xml` sizes from the shared `sheet_cap`
+  helper (the `entry_sizes` pattern), and `sheet_cap_holds`
+  proves `len <= cap` — the no-realloc proof — on header-only,
+  wide, and tall shapes at the true extremes. The proof caught
+  a real under-sizing on its first run: the old 48-char cell
+  budget assumed short values, but `f64` Display expands
+  positionally without exponent (probed `1e300` → 301 digits;
+  `5e-324` → 326 chars), so extreme floats reallocated
+  silently. Per-kind widest (20 `I64`, 327 `F64`, derived in
+  the helper doc) holds on all three shapes.
+- Static copies (scratch probe, `/tmp` crate against `thoth` by
+  path, release profile as above, best-of-31): the five
+  `as_bytes().to_vec()` calls cost 117.3ns per build;
+  header-only `build_xlsx` costs 796ns in absolute terms. One
+  refutation on the way: the first probe run measured 5.1ns
+  for the five copies because LLVM elided the dead
+  allocations — `black_box` per copy (alloc, copy, and free
+  all real) gives the honest figure. The copies stay:
+  borrowing them needs owned-entry `ZipWriter` churn, which no
+  measurement justifies at 117.3ns per build.
+- Re-review pass (same machine/profile/commit): `archive_fits`
+  is a closed form — the loop gathers two sums and the section
+  totals are one multiplication plus add each; the five
+  boundary tests green unchanged, so the spelling is
+  behavior-identical. `sheet_cap` and the emit loop march
+  `letters` by zip, no indexing.
+- Re-review equal-speed checkpoint (superseded below, kept for
+  the method lesson): a best-of-51 A/B read HEAD inside the
+  worktree's own range on both shapes, while an earlier
+  best-of-11 pass had read a ~2% deficit and reversed under
+  more rounds. Thin margins need rounds; eleven was not
+  enough.
+- Re-review speed-up (same machine/profile/commit): diagnosis
+  first — one 200k-integer build cost 600,006 allocations
+  (~20MB) with formatting at 11.15ms of 12.70ms total, so
+  every cell bought two temp `String`s (row digits, value).
+  Fix: row digits formatted once per row into a reused buffer
+  and shared across the row's cells; integer values written
+  straight into the buffer by a direct writer (spelling locked
+  against `to_string` over ±100k plus extremes; two-digit
+  table halves the divisions). `#[inline]` hints stay, but
+  forcing `inline(always)` on the unrolled digit cascade
+  regressed 28% (4.67ms → 6.00ms) and was reverted — the
+  calls cost less than the bloat. The infinity pre-scan fused
+  into the emit loop: one pass over float bytes, wall-neutral
+  within noise, kept as structure (single-infinite reports
+  match the old column-major order exactly; multi-infinite
+  order is now row-major (reviewer ruled: stays). Float values
+  still format through their `String` backend — that swap
+  belongs to the cell cycle, and it is the largest named
+  remainder (float builds still cost ~2.4x int builds).
+  Scratch A/B (`/tmp` probe, release profile as above,
+  best-of-51, runs ordered now/base/now, byte-identity
+  asserted across runs): 200k-integer builds 4.67/4.59ms now
+  vs 12.68ms HEAD (2.8x); 200k-float builds 11.06/10.92ms now
+  vs 16.89ms HEAD (1.5x). Output bytes identical on every run
+  (10470009 / 10870010, matching the recorded 200k figures).
+  Sheet allocs fall from 600,006 to 7.
+- Priced and kept (same probe, temporary mutations, every one
+  reverted, zero `unsafe` in the tree outside the reviewed
+  CRC intrinsics): per-cell bounds checks cost ~2–4% on tall
+  ints (4.59ms → 4.41/4.49ms unchecked). Kept: the price is
+  `unsafe` on the hot path, and no measured percentage buys
+  that without an explicit call — reviewer ruled: declined,
+  checks stay. The `(name, payload)` tuple stays
+  for the same reason in reverse: heterogeneous slices force
+  per-column dispatch somewhere, so parallel arrays move the
+  pairing at full API churn for zero measured gain — ingress
+  shape belongs to the template cycle, which is the named
+  future owner, not a vague later.
+- Review II sizing (same machine/profile/commit): the `sheet_cap`
+  width selection compiles to `cmp` plus `csel` (release aarch64
+  assembler: ~13 scalar instructions per column, cold-only
+  overflow exits) — predicated, no branch, so no mispredict and
+  no vectorizer grievance. The max-column header-only build
+  (16384 columns, the fold's longest run) costs 1484.7µs for
+  941702 bytes. The match stays: this target has no AVX, and
+  the checked arithmetic rule 8 requires refuses the portable
+  vector transform without a measurement overruling it — none
+  does.
+
 ## Cell-format benches (pre-cell-optimization, provisional)
 
 One `cargo bench --bench fill_write` run on this machine (Darwin

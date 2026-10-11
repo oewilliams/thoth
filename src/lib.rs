@@ -7,5 +7,6 @@
 
 pub mod contract;
 pub mod emit;
+pub mod static_parts;
 pub mod xlsx;
 pub mod zip;
