@@ -59,39 +59,44 @@ pub fn push_usize(out: &mut String, v: usize) {
     push_magnitude(out, v as u64);
 }
 
-/// Two-digit table: entry `k` spells `k` zero-padded. Built at
-/// compile time, so this runs zero times and ships as rodata.
-const DEC_PAIRS: [u8; 200] = {
-    let mut table: [u8; 200] = [0; 200];
+/// Two-digit table: entry `k` spells `k` zero-padded, packed as
+/// one little-endian `u16` so a pair is one load and one store.
+/// Built at compile time; ships as rodata.
+const DEC_PAIRS: [u16; 100] = {
+    let mut table: [u16; 100] = [0; 100];
     let mut k: usize = 0;
     while k < 100 {
-        table[2 * k] = b'0' + (k / 10) as u8;
-        table[2 * k + 1] = b'0' + (k % 10) as u8;
+        table[k] = u16::from_le_bytes([b'0' + (k / 10) as u8, b'0' + (k % 10) as u8]);
         k += 1;
     }
     table
 };
 
+/// The digits of `mag` at the tail of a 20-byte buffer, with the
+/// start index. One spelling behind both magnitude sinks.
 #[inline]
-fn push_magnitude(out: &mut String, mut mag: u64) {
+fn magnitude_digits(mut mag: u64) -> ([u8; 20], usize) {
     let mut buf: [u8; 20] = [0; 20];
     let mut i: usize = 20;
     while mag >= 100 {
         let pair: usize = (mag % 100) as usize;
         mag /= 100;
         i -= 2;
-        buf[i] = DEC_PAIRS[2 * pair];
-        buf[i + 1] = DEC_PAIRS[2 * pair + 1];
+        buf[i..i + 2].copy_from_slice(&DEC_PAIRS[pair].to_le_bytes());
     }
     if mag >= 10 {
-        let pair: usize = mag as usize;
         i -= 2;
-        buf[i] = DEC_PAIRS[2 * pair];
-        buf[i + 1] = DEC_PAIRS[2 * pair + 1];
+        buf[i..i + 2].copy_from_slice(&DEC_PAIRS[mag as usize].to_le_bytes());
     } else {
         i -= 1;
         buf[i] = b'0' + mag as u8;
     }
+    (buf, i)
+}
+
+#[inline]
+fn push_magnitude(out: &mut String, mag: u64) {
+    let (buf, i) = magnitude_digits(mag);
     // Digits only, pushed as chars: valid UTF-8 by construction.
     for &b in &buf[i..] {
         out.push(b as char);
@@ -231,25 +236,8 @@ pub(crate) fn push_usize_bytes(out: &mut Vec<u8>, v: usize) {
 }
 
 #[inline]
-fn push_magnitude_bytes(out: &mut Vec<u8>, mut mag: u64) {
-    let mut buf: [u8; 20] = [0; 20];
-    let mut i: usize = 20;
-    while mag >= 100 {
-        let pair: usize = (mag % 100) as usize;
-        mag /= 100;
-        i -= 2;
-        buf[i] = DEC_PAIRS[2 * pair];
-        buf[i + 1] = DEC_PAIRS[2 * pair + 1];
-    }
-    if mag >= 10 {
-        let pair: usize = mag as usize;
-        i -= 2;
-        buf[i] = DEC_PAIRS[2 * pair];
-        buf[i + 1] = DEC_PAIRS[2 * pair + 1];
-    } else {
-        i -= 1;
-        buf[i] = b'0' + mag as u8;
-    }
+fn push_magnitude_bytes(out: &mut Vec<u8>, mag: u64) {
+    let (buf, i) = magnitude_digits(mag);
     out.extend_from_slice(&buf[i..]);
 }
 
