@@ -57,27 +57,54 @@ boundary (rectangularity), never per cell.
 
 ## Templates
 
-Nothing is written without a template, and the template is the contract.
+Nothing is written without a template, and the template is the contract
+(cycle 015, as shipped). The contract is `SheetTemplate` in
+`src/contract.rs`: a template declares, in order, its columns (name
+and kind per column — kind is selected per column at declaration,
+never per cell, and `validate_template` refuses a declared kind that
+disagrees with its `ColumnData` variant), where each column's data
+lives, and its shape knowledge (`ShapeKnowledge`: row count or rows
+unknown; column count or columns unknown, the unknown dimension
+named by `UnknownDimension`). The declaration is the only place
+shape is decided: validation, the ceiling check, and the arena
+reservation consume it without re-deriving shape from the data
+(rectangularity is witnessed once at the boundary, per Ingress).
 A template declares either a size hint from a known shape, or which
 dimension (rows, columns) is unknown — and which case holds is known
-exactly, before emission (cycle 014). The hint sizes the output
-buffer; correctness never depends on it. Known shape: one
+exactly, before emission (cycle 014). The hint (`sheet_hint`,
+expected widths per kind, never the `sheet_cap` worst case) sizes
+the output buffer; correctness never depends on it, and it is
+`None` when either dimension is unknown. Known shape: one
 reservation, no realloc. Unknown dimension: the same builder growing
-in blocks, chosen up front per template, never discovered
-mid-emission; byte output is identical either way. The worst-case
-bound survives as a proof, not the reservation; retained capacity is
-measured and recorded, and no caller silently retains a
-several-times-length allocation. No current caller declares an
-unknown dimension — that spelling arrives with the template types.
-Beyond that, the exact Rust shape (types, macros) is deliberately
-not locked yet.
+in blocks from `ARENA_BLOCK`, chosen up front per template, never
+discovered mid-emission; byte output is identical either way (pinned
+for unknown rows and unknown columns in `tests/template.rs`,
+including an unknown-rows build past the initial reservation). The
+worst-case bound (`sheet_cap`) survives as a proof, not the
+reservation; retained capacity is measured and recorded in
+`TESTING.md` Post-015 (the null-heavy 1.93x retention is reported
+there, and whether the hint learns blank-heavy columns remains the
+successor's decision), and no caller silently retains a
+several-times-length allocation.
 
-- Two template impls are allowed, and a caller exists that needs both:
-  statically allocated fixed-size workbooks and dynamic variable-row
-  workbooks.
+- Two template impls ship, and a caller exists that needs both:
+  `DynamicSheet` (runtime columns over borrowed slices — the pre-015
+  `Sheet`, kept as its alias, constructed only through
+  `DynamicSheet::known` / `unknown_rows` / `unknown_columns`) for
+  dynamic variable-row workbooks, and `StaticSheet<C, R>` (fixed
+  `[T; R]` columns, const shape) for statically allocated fixed-size
+  workbooks, entering with its caller (`examples/static_sheet.rs`
+  plus its round-trip test). `build_workbook` and
+  `write_workbook_file` are generic over `SheetTemplate`; the pre-015
+  spellings (`build_xlsx`, `write_xlsx_file`, `sheet_xml`) keep
+  working only as one-line delegations through `DynamicSheet::known`.
 - Monomorphization is the only allowed branch. Static and dynamic share
-  the same monomorphic cell emitters; they differ only at the template
-  impl, so the hot loop never branches on shape.
+  the same monomorphic cell emitters (`emit_sheet` /
+  `emit_sheet_arena` in `src/contract.rs`, over the unchanged
+  `src/emit.rs` spellings, with `sheet_xml` the oracle); they differ
+  only at the template impl, so the hot loop never branches on shape
+  or impl. The row loop, column letters, row digits, and per-row CRC
+  chunk boundaries are driven through the contract surface.
 - Column-major borrowed ingress is the default. Row-major is deferred
   until a caller shows its fill pattern needs it.
 - Strings are the one exception to static allocation. A length cap is

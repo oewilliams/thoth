@@ -23,8 +23,9 @@ fn write_path(name: &str) -> std::path::PathBuf {
 
 /// One untimed-setup, timed-write iteration: per-iteration debris
 /// removal and column construction run in setup, outside the clock.
-/// The clock covers exactly the `write_xlsx_file` call (fill plus
-/// write); one trailing cleanup after the run clears the last file.
+/// The clock covers exactly the `write_workbook_file` call over a
+/// dynamic template (fill plus write); one trailing cleanup after
+/// the run clears the last file.
 fn write_iter(b: &mut Bencher, example: &common::Example) {
     b.iter_with_setup(
         || {
@@ -34,7 +35,8 @@ fn write_iter(b: &mut Bencher, example: &common::Example) {
             (path, cols)
         },
         |(path, cols)| {
-            thoth::xlsx::write_xlsx_file(&path, &cols).unwrap();
+            let sheet = common::Example::dynamic_sheet("data", &cols);
+            thoth::xlsx::write_workbook_file(&path, &[sheet]).unwrap();
         },
     );
     let path = write_path(example.name);
@@ -131,19 +133,10 @@ fn multi_sheet(c: &mut Criterion) {
     let cols1 = ex1.writer_columns();
     let cols2 = ex2.writer_columns();
     let cols3 = ex3.writer_columns();
-    let sheets: Vec<thoth::xlsx::Sheet<'_>> = vec![
-        thoth::xlsx::Sheet {
-            name: "First".to_string(),
-            columns: &cols1,
-        },
-        thoth::xlsx::Sheet {
-            name: "Second".to_string(),
-            columns: &cols2,
-        },
-        thoth::xlsx::Sheet {
-            name: "Headers".to_string(),
-            columns: &cols3,
-        },
+    let sheets: Vec<thoth::contract::DynamicSheet<'_>> = vec![
+        thoth::contract::DynamicSheet::known("First".to_string(), &cols1),
+        thoth::contract::DynamicSheet::known("Second".to_string(), &cols2),
+        thoth::contract::DynamicSheet::known("Headers".to_string(), &cols3),
     ];
     let mut group = c.benchmark_group("multi_sheet");
     group.bench_function("three_sheet_20000", |b| {
@@ -168,7 +161,7 @@ fn multi_sheet(c: &mut Criterion) {
 /// now and is measured in context here, as build minus emission.
 ///
 /// Phase isolation (cycle 012): per recipe, (a) emission alone —
-/// `sheet_xml` per sheet, summed over the workbook's sheets, result
+/// `sheet_xml_template` per sheet, summed over the workbook's sheets, result
 /// `black_box`ed, no file touched; (b) build alone — `build_workbook`,
 /// no file touched. End-to-end (c) is never re-implemented here: the
 /// `fill_write` / `cells` / `floor` / `multi_sheet` groups already time
@@ -181,36 +174,62 @@ fn phase(c: &mut Criterion) {
     for n in [20_000, 200_000] {
         let ints = common::tall_ints(n);
         let ints_cols = ints.writer_columns();
-        let ints_sheets: Vec<thoth::xlsx::Sheet<'_>> = vec![thoth::xlsx::Sheet {
-            name: "data".to_string(),
-            columns: &ints_cols,
-        }];
+        let ints_sheets: Vec<thoth::contract::DynamicSheet<'_>> =
+            vec![thoth::contract::DynamicSheet::known(
+                "data".to_string(),
+                &ints_cols,
+            )];
         group.bench_function(format!("emit_tall_ints_{n}"), |b| {
-            b.iter(|| std::hint::black_box(thoth::xlsx::sheet_xml(&ints_cols).unwrap()));
+            b.iter(|| {
+                std::hint::black_box(
+                    thoth::xlsx::sheet_xml_template(&common::Example::dynamic_sheet(
+                        "data", &ints_cols,
+                    ))
+                    .unwrap(),
+                )
+            });
         });
         group.bench_function(format!("build_tall_ints_{n}"), |b| {
             b.iter(|| std::hint::black_box(thoth::xlsx::build_workbook(&ints_sheets).unwrap()));
         });
         let floats = common::tall_floats(n);
         let floats_cols = floats.writer_columns();
-        let floats_sheets: Vec<thoth::xlsx::Sheet<'_>> = vec![thoth::xlsx::Sheet {
-            name: "data".to_string(),
-            columns: &floats_cols,
-        }];
+        let floats_sheets: Vec<thoth::contract::DynamicSheet<'_>> =
+            vec![thoth::contract::DynamicSheet::known(
+                "data".to_string(),
+                &floats_cols,
+            )];
         group.bench_function(format!("emit_tall_floats_{n}"), |b| {
-            b.iter(|| std::hint::black_box(thoth::xlsx::sheet_xml(&floats_cols).unwrap()));
+            b.iter(|| {
+                std::hint::black_box(
+                    thoth::xlsx::sheet_xml_template(&common::Example::dynamic_sheet(
+                        "data",
+                        &floats_cols,
+                    ))
+                    .unwrap(),
+                )
+            });
         });
         group.bench_function(format!("build_tall_floats_{n}"), |b| {
             b.iter(|| std::hint::black_box(thoth::xlsx::build_workbook(&floats_sheets).unwrap()));
         });
         let nulls = all_null(n);
         let nulls_cols = nulls.writer_columns();
-        let nulls_sheets: Vec<thoth::xlsx::Sheet<'_>> = vec![thoth::xlsx::Sheet {
-            name: "data".to_string(),
-            columns: &nulls_cols,
-        }];
+        let nulls_sheets: Vec<thoth::contract::DynamicSheet<'_>> =
+            vec![thoth::contract::DynamicSheet::known(
+                "data".to_string(),
+                &nulls_cols,
+            )];
         group.bench_function(format!("emit_tall_null_{n}"), |b| {
-            b.iter(|| std::hint::black_box(thoth::xlsx::sheet_xml(&nulls_cols).unwrap()));
+            b.iter(|| {
+                std::hint::black_box(
+                    thoth::xlsx::sheet_xml_template(&common::Example::dynamic_sheet(
+                        "data",
+                        &nulls_cols,
+                    ))
+                    .unwrap(),
+                )
+            });
         });
         group.bench_function(format!("build_tall_null_{n}"), |b| {
             b.iter(|| std::hint::black_box(thoth::xlsx::build_workbook(&nulls_sheets).unwrap()));
@@ -222,24 +241,15 @@ fn phase(c: &mut Criterion) {
     let cols1 = ex1.writer_columns();
     let cols2 = ex2.writer_columns();
     let cols3 = ex3.writer_columns();
-    let sheets: Vec<thoth::xlsx::Sheet<'_>> = vec![
-        thoth::xlsx::Sheet {
-            name: "First".to_string(),
-            columns: &cols1,
-        },
-        thoth::xlsx::Sheet {
-            name: "Second".to_string(),
-            columns: &cols2,
-        },
-        thoth::xlsx::Sheet {
-            name: "Headers".to_string(),
-            columns: &cols3,
-        },
+    let sheets: Vec<thoth::contract::DynamicSheet<'_>> = vec![
+        thoth::contract::DynamicSheet::known("First".to_string(), &cols1),
+        thoth::contract::DynamicSheet::known("Second".to_string(), &cols2),
+        thoth::contract::DynamicSheet::known("Headers".to_string(), &cols3),
     ];
     group.bench_function("emit_three_sheet_20000", |b| {
         b.iter(|| {
             for sheet in sheets.iter() {
-                std::hint::black_box(thoth::xlsx::sheet_xml(sheet.columns).unwrap());
+                std::hint::black_box(thoth::xlsx::sheet_xml_template(sheet).unwrap());
             }
         });
     });
@@ -249,5 +259,78 @@ fn phase(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, fill_write, floor, cells, multi_sheet, phase);
+/// Static impl at its example's fixed shape (2 columns x 3 rows):
+/// build and end-to-end write, beside the dynamic spelling of the
+/// same sheet, so Post-015 records what compile-time shape buys.
+fn static_template(c: &mut Criterion) {
+    let fixed: thoth::contract::StaticSheet<2, 3> = thoth::contract::StaticSheet::new(
+        "fixed",
+        [
+            thoth::contract::StaticColumn::I64 {
+                name: "t",
+                data: [100, 200, 300],
+            },
+            thoth::contract::StaticColumn::F64 {
+                name: "px",
+                data: [10.5, 11.0, 12.25],
+            },
+        ],
+    );
+    let t: Vec<i64> = vec![100, 200, 300];
+    let px: Vec<f64> = vec![10.5, 11.0, 12.25];
+    let cols: Vec<(thoth::contract::Column, thoth::xlsx::ColumnData<'_>)> = vec![
+        (
+            thoth::contract::Column {
+                name: "t".to_string(),
+                kind: thoth::contract::Kind::I64,
+            },
+            thoth::xlsx::ColumnData::I64(&t),
+        ),
+        (
+            thoth::contract::Column {
+                name: "px".to_string(),
+                kind: thoth::contract::Kind::F64,
+            },
+            thoth::xlsx::ColumnData::F64(&px),
+        ),
+    ];
+    let dynamic: thoth::contract::DynamicSheet<'_> =
+        thoth::contract::DynamicSheet::known("fixed".to_string(), &cols);
+    let mut group = c.benchmark_group("static_template");
+    group.bench_function("build_static_fixed", |b| {
+        b.iter(|| std::hint::black_box(thoth::xlsx::build_workbook(&[fixed]).unwrap()));
+    });
+    group.bench_function("build_dynamic_fixed", |b| {
+        b.iter(|| {
+            std::hint::black_box(
+                thoth::xlsx::build_workbook(std::slice::from_ref(&dynamic)).unwrap(),
+            )
+        });
+    });
+    group.bench_function("write_static_fixed", |b| {
+        b.iter_with_setup(
+            || {
+                let path = write_path("static_fixed");
+                let _ = std::fs::remove_file(&path);
+                path
+            },
+            |path| {
+                thoth::xlsx::write_workbook_file(&path, &[fixed]).unwrap();
+            },
+        );
+        let path = write_path("static_fixed");
+        let _ = std::fs::remove_file(&path);
+    });
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    fill_write,
+    floor,
+    cells,
+    multi_sheet,
+    phase,
+    static_template
+);
 criterion_main!(benches);

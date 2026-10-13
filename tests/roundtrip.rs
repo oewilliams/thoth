@@ -17,19 +17,23 @@ fn temp_path(name: &str) -> PathBuf {
 fn examples_round_trip_through_disk() {
     for example in common::all(64) {
         let cols = example.writer_columns();
+        let template = common::Example::dynamic_sheet("data", &cols);
         if let Some(err_sub) = example.expect_error {
-            let err = thoth::xlsx::sheet_xml(&cols).unwrap_err().to_string();
+            let err = thoth::xlsx::sheet_xml_template(&template)
+                .unwrap_err()
+                .to_string();
             assert!(err.contains(err_sub), "{}: {err}", example.name);
             continue;
         }
         let path = temp_path(example.name);
         let _ = std::fs::remove_file(&path);
-        thoth::xlsx::write_xlsx_file(&path, &cols).unwrap();
+        thoth::xlsx::write_workbook_file(&path, &[template]).unwrap();
         let got = common::read_sheet_values(&path);
         assert_eq!(got, example.expected, "{}", example.name);
         // The stored archive embeds exactly the sheet built: the floor
         // oracle, checked per example, not just once.
-        let sheet = thoth::xlsx::sheet_xml(&cols).unwrap();
+        let sheet = thoth::xlsx::sheet_xml_template(&common::Example::dynamic_sheet("data", &cols))
+            .unwrap();
         let bytes = std::fs::read(&path).unwrap();
         assert!(
             bytes.windows(sheet.len()).any(|w| w == sheet.as_slice()),

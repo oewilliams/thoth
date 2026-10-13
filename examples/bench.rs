@@ -18,8 +18,9 @@ fn bench(example: &common::Example) {
     ));
     let _ = std::fs::remove_file(&path);
     let cols = example.writer_columns();
+    let sheet = common::Example::dynamic_sheet("data", &cols);
     let start = Instant::now();
-    thoth::xlsx::write_xlsx_file(&path, &cols).unwrap();
+    thoth::xlsx::write_workbook_file(&path, &[sheet]).unwrap();
     let elapsed = start.elapsed();
     let bytes = std::fs::metadata(&path).unwrap().len();
     let got = common::read_sheet_values(&path);

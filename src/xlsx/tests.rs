@@ -1,9 +1,5 @@
-use super::{
-    ColumnData, Sheet, WriteError, XlsxError, archive_fits, build_workbook, build_xlsx, sheet_cap,
-    sheet_xml,
-};
-use crate::contract::{Column, Kind};
-use crate::emit::col_letters;
+use super::{ColumnData, WriteError, XlsxError, archive_fits, build_workbook, build_xlsx};
+use crate::contract::{Column, DynamicSheet, Kind, sheet_cap, sheet_letters};
 
 #[test]
 fn too_large_states_the_ceiling() {
@@ -78,7 +74,10 @@ fn infinite_names_the_excel_row() {
         },
         ColumnData::F64(&px),
     )];
-    let err: String = sheet_xml(&cols).unwrap_err().to_string();
+    let template: DynamicSheet<'_> = DynamicSheet::known("data".to_string(), &cols);
+    let err: String = super::sheet_xml_template(&template)
+        .unwrap_err()
+        .to_string();
     assert!(err.contains("row 3"), "{err}");
 }
 
@@ -115,11 +114,8 @@ fn wrapper_matches_direct_workbook() {
         },
         ColumnData::I64(&t),
     )];
-    let direct: Vec<u8> = build_workbook(&[Sheet {
-        name: "data".to_string(),
-        columns: &cols,
-    }])
-    .unwrap();
+    let direct: Vec<u8> =
+        build_workbook(&[DynamicSheet::known("data".to_string(), &cols)]).unwrap();
     let wrapped: Vec<u8> = build_xlsx(&cols).unwrap();
     assert_eq!(wrapped, direct);
 }
@@ -152,15 +148,9 @@ fn ragged_in_second_sheet_names_sheet_and_column() {
             ColumnData::F64(&b),
         ),
     ];
-    let sheets: Vec<Sheet<'_>> = vec![
-        Sheet {
-            name: "First".to_string(),
-            columns: &good,
-        },
-        Sheet {
-            name: "Second".to_string(),
-            columns: &ragged,
-        },
+    let sheets: Vec<DynamicSheet<'_>> = vec![
+        DynamicSheet::known("First".to_string(), &good),
+        DynamicSheet::known("Second".to_string(), &ragged),
     ];
     let err: String = build_workbook(&sheets).unwrap_err().to_string();
     assert!(err.contains("Second"), "{err}");
@@ -181,9 +171,10 @@ fn no_file_name_states_its_condition() {
 fn sheet_cap_holds() {
     fn check(cols: &[(Column, ColumnData<'_>)]) {
         let nrows: usize = cols[0].1.len();
-        let letters: Vec<String> = (0..cols.len()).map(col_letters).collect();
-        let cap: usize = sheet_cap(nrows, cols, &letters);
-        let sheet: Vec<u8> = sheet_xml(cols).unwrap();
+        let template: DynamicSheet<'_> = DynamicSheet::known("data".to_string(), cols);
+        let letters: Vec<String> = sheet_letters(&template);
+        let cap: usize = sheet_cap(&template, nrows, &letters);
+        let sheet: Vec<u8> = super::sheet_xml_template(&template).unwrap();
         assert!(
             sheet.len() <= cap,
             "sheet {} bytes over cap {cap}",

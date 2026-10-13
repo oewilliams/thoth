@@ -6,7 +6,7 @@
 //! examples carry the error substring they must fail with and never
 //! reach a file.
 
-use thoth::contract::{Column, Kind};
+use thoth::contract::{Column, DynamicSheet, Kind};
 use thoth::xlsx::ColumnData;
 
 /// One column of example data, in Excel order.
@@ -27,6 +27,14 @@ pub struct Example {
 }
 
 impl Example {
+    /// Dynamic template for this example, named `name`: the
+    /// contract spelling every test and bench routes through.
+    /// Borrows the column view built by [`Example::writer_columns`];
+    /// the caller keeps that view alive for the template's life.
+    pub fn dynamic_sheet<'a>(name: &str, cols: &'a [(Column, ColumnData<'a>)]) -> DynamicSheet<'a> {
+        DynamicSheet::known(name.to_string(), cols)
+    }
+
     /// Borrowed column view for the writer.
     pub fn writer_columns(&self) -> Vec<(Column, ColumnData<'_>)> {
         self.columns

@@ -992,6 +992,101 @@ exposed to the split) retaining the largest gain against its
 Post-012 build pair (5.20–5.23ms); no split-attributable regression
 is read. The R4 emitter-parity re-probe lives in DECISION.md.
 
+Post-015 (template contract: one contract, dynamic and static
+impls, hint or named unknown through the declaration), this
+machine (Darwin 27.0.0 arm64, Apple M4, `RELEASE_ARM64_T8132`),
+bench profile (inherits `--release`: `overflow-checks = true`,
+`codegen-units = 1`), rustc 1.93.1, commit `c03f374` plus the
+uncommitted 015 work. Box during the spells: 1-minute load
+1.25–2.11, free pages ~75k (16KB pages, `vm_stat`, one check).
+Probes are `/tmp` scratch crates against `thoth` by path (HEAD
+from a `git archive` extraction in `/tmp/thoth-head`); the
+timed probe alternates HEAD and post-015 binaries in one shell
+(interleaved A/B, five rounds of 15 builds per recipe per run,
+medians of per-round medians quoted as ranges over three
+interleaved runs, byte-identity asserted before timing).
+
+(a) Byte-identity held. `cargo fmt` applied, `sh check.sh`
+green (format, 33 unit tests plus round-trip, multi-sheet,
+sealed, and the 6 new template tests, clippy `-D warnings`,
+docs); `git diff -- src/emit.rs` is empty and `sheet_xml`
+remains the oracle (`sheet_xml_template` over a known dynamic
+template). The `/tmp` probe compared `build_workbook` /
+`build_xlsx` output byte for byte (`cmp`) against HEAD at
+200_000 rows on ints, floats, null, and mixed single sheets
+and the three-sheet recipe (ints 200k + floats 200k +
+header-only): identical on every recipe (archive lengths
+10470009 / 10870010 / 10470071 / 17047851 / 21338118; the
+mixed length differs from Post-014's 16914521 only because
+this probe's mixed recipe pairs `0..n` ints with `i + 0.5`
+floats — HEAD and post-015 agree on the recipe as built).
+
+(b) Retained capacity, same probe (returned `Vec` capacity /
+length, known shape): ints 12203418 / 10470009 (1.17x),
+floats 12603419 / 10870010 (1.16x), mixed 20203485 /
+17047851 (1.19x), three-sheet 24805050 / 21338118 (1.16x) —
+all unchanged from HEAD — and null 20203485 / 10470071
+(1.93x), the Post-014 null-heavy retention reported again,
+not silently inherited: the hint still spells typical values
+while blank rows emit about half of it, and whether the hint
+learns blank-heavy columns stays the successor's decision
+(spec R3), not taken here. Unknown-rows spelling of the same
+sheets (builder starts from `ARENA_BLOCK`, 8192 bytes, and
+grows): ints 11546624 / 10470009 (1.10x), null 11546624 /
+10470071 (1.10x), mixed 23093248 / 17047851 (1.35x), with
+bytes asserted identical to the known spelling in the probe
+and in `tests/template.rs`.
+
+(c) Build time, interleaved A/B (HEAD first, then reversed;
+the ranges are the three interleaved medians):
+
+| bench (200k) | HEAD | post-015 | read |
+|---|---|---|---|
+| `build_ints` | 4.14–4.23ms | 3.83–3.92ms | below HEAD, not claimed* |
+| `build_floats` | 9.12–9.14ms | 8.90–8.93ms | below HEAD, not claimed* |
+| `build_null` | 4.42–4.60ms | 4.45–4.52ms | parity |
+| `build_three_sheet` | 13.29–13.34ms | 12.89–13.00ms | below HEAD, not claimed* |
+| `emit_ints` (oracle) | 3.56–3.78ms | 3.59–3.75ms | parity |
+| `emit_floats` (oracle) | 9.25–9.26ms | 9.19–9.36ms | parity |
+
+\*No speedup is claimed for the contract: `src/emit.rs` is
+untouched and the emission drivers re-express the same loop,
+so sub-HEAD build reads are code-layout drift between the two
+binaries, recorded because no recipe regresses on any
+interleaved read. One discarded spelling is named, not
+dropped: the first trait draft indexed the template per cell
+and read null builds ~10–15% and float builds ~5% over HEAD
+across five interleavings; the shipped drivers gather each
+sheet's `ColumnView`s once before the row loop (the pre-015
+slice march) and the table above supersedes those reads.
+An isolated null probe (25 builds per round, emit beside
+build) confirmed the fix: emit at parity (4.00–4.09ms both
+sides) and build within the interleaved ranges above.
+
+(d) Growth-path pricing (same probe binaries, known beside
+unknown in one binary): ints 4.29–4.34ms unknown vs
+3.83–3.92ms known (~+12%), null 4.93–5.00ms vs 4.45–4.52ms
+(~+10%), mixed in a paired 15-build probe 11.47 / 11.95ms
+unknown vs 10.53 / 11.29ms known (~+6–9% over two runs).
+Block growth is priced, not free: it costs high single digits
+to ~12% at 200k and buys the named-unknown declaration, with
+byte-identity either way.
+
+(e) Static impl, measured plainly. The example
+(`examples/static_sheet.rs`, `StaticSheet<2, 3>`, 3569-byte
+file, `cargo run --release --example static_sheet`) and the
+probe's batched fixed-shape builds (2000 builds per round,
+five rounds): `build_static_fixed` medians 1.030–1.033µs vs
+`build_dynamic_fixed` 1.043–1.062µs for the dynamic spelling
+of the same sheet — within noise at this shape. End-to-end
+`write_static_fixed` (batch of 200 sealed writes per round):
+0.136–0.141ms per 3569-byte file (~26 MB/s, filesystem
+dominated). Compile-time shape buys nothing measurable at
+the example's shape; the static impl stands on ergonomics
+and the DESIGN promise, not on an invented speed claim.
+The `static_template` criterion group in
+`benches/fill_write.rs` carries these three benches in-tree.
+
 ## Run-offs (once, not a gate)
 
 Once per serious challenger, same examples, same machine, same

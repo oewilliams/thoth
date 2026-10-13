@@ -11,7 +11,7 @@ use crate::static_parts::{
     WORKBOOK_RELS_TAIL, WORKBOOK_SHEET_CLOSE, WORKBOOK_SHEET_ID, WORKBOOK_SHEET_OPEN,
     WORKBOOK_SHEET_RID, WORKBOOK_TAIL,
 };
-use crate::xlsx::{Sheet, XlsxError};
+use crate::xlsx::XlsxError;
 
 /// Decimal digit width of `n` (1 for 0..=9, 2 for 10..=99, ...).
 /// The `ilog10` spelling (benched ~20% faster than the division loop
@@ -166,39 +166,46 @@ pub(crate) fn sheet_part_name(index: usize) -> String {
 /// Sheet-name validation at the workbook boundary (STYLE rule 8:
 /// refused loudly, never repaired or trimmed). Checked once in
 /// `build_workbook` before any sheet is emitted.
-pub(crate) fn validate_sheet_names(sheets: &[Sheet<'_>]) -> Result<(), XlsxError> {
-    if sheets.is_empty() {
+pub(crate) fn validate_sheet_names(names: &[&str]) -> Result<(), XlsxError> {
+    if names.is_empty() {
         return Err(XlsxError::NoSheets);
     }
-    for sheet in sheets {
-        let name: &String = &sheet.name;
+    for name in names {
         if name.is_empty() {
-            return Err(XlsxError::SheetNameEmpty { name: name.clone() });
+            return Err(XlsxError::SheetNameEmpty {
+                name: name.to_string(),
+            });
         }
         if name.chars().count() > 31 {
-            return Err(XlsxError::SheetNameTooLong { name: name.clone() });
+            return Err(XlsxError::SheetNameTooLong {
+                name: name.to_string(),
+            });
         }
         if let Some(ch) = name
             .chars()
             .find(|c| matches!(c, '[' | ']' | ':' | '*' | '?' | '/' | '\\') || c.is_control())
         {
             return Err(XlsxError::SheetNameInvalidChar {
-                name: name.clone(),
+                name: name.to_string(),
                 ch,
             });
         }
         if name.starts_with('\'') || name.ends_with('\'') {
-            return Err(XlsxError::SheetNameApostrophe { name: name.clone() });
+            return Err(XlsxError::SheetNameApostrophe {
+                name: name.to_string(),
+            });
         }
         if name.eq_ignore_ascii_case("History") {
-            return Err(XlsxError::SheetNameReserved { name: name.clone() });
+            return Err(XlsxError::SheetNameReserved {
+                name: name.to_string(),
+            });
         }
     }
-    for (i, sheet) in sheets.iter().enumerate() {
-        for prev in &sheets[..i] {
-            if prev.name.to_lowercase() == sheet.name.to_lowercase() {
+    for (i, name) in names.iter().enumerate() {
+        for prev in &names[..i] {
+            if prev.to_lowercase() == name.to_lowercase() {
                 return Err(XlsxError::DuplicateSheetName {
-                    name: sheet.name.clone(),
+                    name: name.to_string(),
                 });
             }
         }
@@ -212,6 +219,7 @@ mod tests {
         content_types_cap, content_types_xml, digit_width, digit_width_sum, escape_sheet_name,
         workbook_cap, workbook_rels_cap, workbook_rels_xml, workbook_xml,
     };
+    use crate::contract::DynamicSheet;
     use crate::contract::{Column, Kind};
     use crate::static_parts::{
         CONTENT_TYPES_HEAD, CONTENT_TYPES_SHEET_CLOSE, CONTENT_TYPES_SHEET_OPEN,
@@ -221,7 +229,7 @@ mod tests {
         WORKBOOK_SHEET_CLOSE, WORKBOOK_SHEET_ID, WORKBOOK_SHEET_OPEN, WORKBOOK_SHEET_RID,
         WORKBOOK_TAIL,
     };
-    use crate::xlsx::{ColumnData, Sheet, build_workbook};
+    use crate::xlsx::{ColumnData, build_workbook};
 
     /// Tripwire on the frozen statics: `RELS`/`STYLES` stay whole;
     /// the three sheet-naming parts are pinned as fragments plus a
@@ -355,12 +363,9 @@ mod tests {
             },
             ColumnData::I64(&t),
         )];
-        build_workbook(&[Sheet {
-            name: name.to_string(),
-            columns: &cols,
-        }])
-        .unwrap_err()
-        .to_string()
+        build_workbook(&[DynamicSheet::known(name.to_string(), &cols)])
+            .unwrap_err()
+            .to_string()
     }
 
     fn names_error(names: &[&str]) -> String {
@@ -372,12 +377,9 @@ mod tests {
             },
             ColumnData::I64(&t),
         )];
-        let sheets: Vec<Sheet<'_>> = names
+        let sheets: Vec<DynamicSheet<'_>> = names
             .iter()
-            .map(|name| Sheet {
-                name: name.to_string(),
-                columns: &cols,
-            })
+            .map(|name| DynamicSheet::known(name.to_string(), &cols))
             .collect();
         build_workbook(&sheets).unwrap_err().to_string()
     }
@@ -391,16 +393,13 @@ mod tests {
             },
             ColumnData::I64(&t),
         )];
-        build_workbook(&[Sheet {
-            name: name.to_string(),
-            columns: &cols,
-        }])
-        .is_ok()
+        build_workbook(&[DynamicSheet::known(name.to_string(), &cols)]).is_ok()
     }
 
     #[test]
     fn no_sheets_is_refused() {
-        let err: String = build_workbook(&[]).unwrap_err().to_string();
+        let empty: &[DynamicSheet<'_>] = &[];
+        let err: String = build_workbook(empty).unwrap_err().to_string();
         assert!(err.contains("no sheets declared"), "{err}");
     }
 

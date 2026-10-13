@@ -5,6 +5,8 @@
 //! once at the boundary, and the emitters below are monomorphic after
 //! that. No per-cell type switch, no style object, no shared-string hash.
 
+mod macros;
+
 pub mod contract;
 pub mod emit;
 pub mod static_parts;

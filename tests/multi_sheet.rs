@@ -8,8 +8,8 @@ mod common;
 
 use std::path::PathBuf;
 
-use thoth::contract::{Column, Kind};
-use thoth::xlsx::{ColumnData, Sheet};
+use thoth::contract::{Column, DynamicSheet, Kind};
+use thoth::xlsx::ColumnData;
 
 fn temp_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("thoth-multi-{}-{name}.xlsx", std::process::id()))
@@ -68,19 +68,10 @@ fn three_sheets_round_trip_per_sheet() {
             ColumnData::I64(&empty_i),
         ),
     ];
-    let sheets: Vec<Sheet<'_>> = vec![
-        Sheet {
-            name: "First".to_string(),
-            columns: &cols1,
-        },
-        Sheet {
-            name: "A&B".to_string(),
-            columns: &cols2,
-        },
-        Sheet {
-            name: "Headers".to_string(),
-            columns: &cols3,
-        },
+    let sheets: Vec<DynamicSheet<'_>> = vec![
+        DynamicSheet::known("First".to_string(), &cols1),
+        DynamicSheet::known("A&B".to_string(), &cols2),
+        DynamicSheet::known("Headers".to_string(), &cols3),
     ];
     let path: PathBuf = temp_path("three");
     let _ = std::fs::remove_file(&path);
@@ -96,7 +87,8 @@ fn three_sheets_round_trip_per_sheet() {
     // Verbatim embed per sheet: each sheet's bytes appear whole.
     let bytes: Vec<u8> = std::fs::read(&path).unwrap();
     for cols in [&cols1, &cols2, &cols3] {
-        let sheet: Vec<u8> = thoth::xlsx::sheet_xml(cols).unwrap();
+        let template: DynamicSheet<'_> = DynamicSheet::known("data".to_string(), cols);
+        let sheet: Vec<u8> = thoth::xlsx::sheet_xml_template(&template).unwrap();
         assert!(
             bytes.windows(sheet.len()).any(|w| w == sheet.as_slice()),
             "zip does not embed sheet verbatim"
