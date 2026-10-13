@@ -878,6 +878,120 @@ state (the uncommitted 011 work only); 012 touches only
 entry. One changed library byte would have failed the
 cycle; none changed.
 
+Post-014 (arena: one buffer, emitted once, checksummed as it
+goes), this machine (Darwin 27.0.0 arm64, Apple M4,
+`RELEASE_ARM64_T8132`), bench profile (inherits `--release`:
+`overflow-checks = true`, `codegen-units = 1`), rustc 1.93.1,
+commit `2a51dc9` plus the uncommitted 014 work. Box during the
+spells: 1-minute load 1.7–2.7. Criterion reads are direct-binary
+runs (`fill_write-ec72a5f783e16fae`, single filter, `--bench`
+flag; estimates mtimes confirmed moved before quoting). The
+scratch probes lived in `examples/` only for the measurement
+and were removed before delivery; the HEAD tree for the A/B
+reads is a `git archive` extraction in `/tmp/thoth-head`.
+
+(a) Byte-identity held. `sh check.sh` green (33 unit tests,
+round-trip, multi-sheet, and the four `sealed.rs` locks);
+verbatim-embed, cat-identity, `static_parts_are_pinned`,
+`sheet_cap_holds`, `workbook_parts_cap_holds`, `archive_fits`
+ceiling tests, and the `golden_small_archive_is_byte_identical`
+lock all pass — the golden lock's expected 207 bytes unchanged,
+its construction re-spelled through the arena primitives. A
+`/tmp` probe compared `build_workbook` output from the HEAD and
+post-014 binaries byte for byte (`cmp`) on ints, floats, null,
+and mixed single sheets and the 200k three-sheet recipe at
+200_000 rows: identical on every recipe (archive lengths
+10470009 / 10870010 / 10470071 / 16914521 / 21338118).
+
+(b) Peak memory (Post-012 R4 method: whole-process peak RSS
+from `/usr/bin/time -l`, three runs each, bytes held alive to
+exit) on the 200k three-sheet recipe (sheets-sum 21334138
+bytes, archive 21338118): HEAD peaks at 47923200 bytes on all
+three runs (the Post-012 recorded 47611904–47628288), post-014
+at 26558464 on all three. The sheets-plus-archive double
+residency (42672256 live bytes at the old `finish` copy) is
+gone; the new peak is the one arena (24805050 capacity) plus
+the borrowed ingress. Retained capacity versus length on the
+returned buffer, same probe: ints 12203418 / 10470009 (1.17x),
+floats 12603419 / 10870010 (1.16x), mixed 20203485 / 16914521
+(1.19x), three-sheet 24805050 / 21338118 (1.16x) — and null
+20203485 / 10470071 (1.93x): the hint spells typical values
+while blank rows emit about half of it, so a null-heavy caller
+retains about twice the archive length. That figure is
+recorded here for the successor's decision (spec R2); no
+shrink step is taken this cycle.
+
+(c) Build time. Criterion phase re-take, agreeing pairs (means
+within 3%, CI half-width under 5%, severe outliers ≤ 10%):
+
+| bench | read A (mean [CI], severe) | read B (mean [CI], severe) | Post-012 pair | delta |
+|---|---|---|---|---|
+| `phase/build_tall_ints_200000` | 3.6122ms [3.6037, 3.6214], 1% | 3.6419ms [3.6270, 3.6578], 3% | 4.8045 / 4.8168ms | −24% |
+| `phase/build_tall_floats_200000` | 8.9042ms [8.8989, 8.9095], 0% | 8.8957ms [8.8886, 8.9047], 1% | 9.8697 / 9.8778ms | −10% |
+| `phase/build_tall_null_200000` | 4.1103ms [4.0903, 4.1331], 9% | 4.0304ms [4.0256, 4.0360], 3% | 5.2289 / 5.2040ms | −21 to −23% |
+| `phase/build_three_sheet_20000` | 1.1689ms [1.1675, 1.1703], 0% | 1.1663ms [1.1650, 1.1677], 1% | 1.3838 / 1.3833ms | −16% |
+
+Emission (the unchanged `sheet_xml` oracle) beside them: ints
+3.6359 / 3.6152ms (Post-012 3.6486 / 3.6492, within 1%),
+floats 9.4328 / 9.3920ms (Post-012 8.6057 / 8.6158, +9%),
+null 4.2102 / 4.2338ms (Post-012 4.0559 / 4.0605, +4%). The
+float and null emission deltas are cross-session drift on
+untouched code — ints emission, measured the same way in the
+same spells, agrees with Post-012 — so the load-bearing build
+comparison is the interleaved A/B below, and the deltas above
+are reported, not gated (spec R6). Interleaved cross-binary
+A/B (`/tmp` probe, HEAD vs post-014 binaries alternated, five
+rounds of 15 builds each, medians of per-round medians):
+ints 4.725ms -> 3.748ms (−21%), floats 10.324ms -> 8.704ms
+(−16%), null 5.199ms -> 4.231ms (−19%). All three sit above
+the prototype's recorded range (ints ~8.5–11%, floats
+~7.7–9%, nulls ~2–3%); no recipe regresses on any read.
+
+Emission parity (R4), same interleaved probe method (9 rounds
+of 15 emissions, rotating order, byte-identity asserted first):
+the byte emitter reads within noise of the `sheet_xml` oracle
+on ints across ten spells (−5% to +5%, centred on parity),
+about 2–5% faster on floats, and a consistent ~0.6–3.8%
+slower on nulls — the prototype's own tuned figure (~2%),
+recorded as the remaining emitter deficit rather than hidden.
+One tuning attempt is rejected on its numbers: a precomputed
+per-column cell prefix read 6–17% slower on every recipe
+(runtime-length appends lose to constant-length ones) and was
+reverted before delivery.
+
+Discarded reads (never silently dropped): one
+`build_tall_ints_200000` read at 3.6099ms carried 17% outliers
+and was discarded for the qualifying pair above; criterion's
+own change% calls are not load-bearing, its stored baselines
+having been churned by these runs (the Post-007/009
+precedent). `ZipWriter` is retired as a public type and the
+`zip` module is crate-internal; the `crc` bench group is
+dropped with it, CRC now measured in context as build minus
+emission in the `phase` group. No whole-sheet `crc32` call
+survives on the build path: sheets fold per row over the
+arena range, small parts checksum their just-emitted range,
+and `crc_update_any_split_matches_one_shot` pins every split
+(including empty chunks) against the one-shot spelling.
+
+Applicator re-check (cycle 014, same machine and bench profile,
+commit `2a51dc9` plus the uncommitted 014 work and the applicator's
+`build_workbook` split; details in `specs/014-arena/DECISION.md`):
+`cargo fmt` applied and clean, `sh check.sh` green (format, 33 unit
+tests, round-trip, multi-sheet, four sealed tests, clippy
+`-D warnings`, docs). Byte-identity re-probed in the final tree:
+`build_workbook` dumps at 200k rows on ints, floats, null, and mixed
+single sheets and the three-sheet recipe are byte-identical to the
+HEAD dumps (archive lengths 10470009 / 10870010 / 10470071 /
+16914521 / 21338118), retained capacities unchanged (null
+20203485 / 10470071 = 1.93x). Build-time sanity in an elevated
+session (1-minute load 1.7–1.9, rising across the spells; medians
+of 15 builds): ints 4.19–4.38ms, floats 9.74–10.20ms, null
+4.29–4.46ms — uniformly above the quiet-spell reads above and
+slowest on the untouched float path, with null (the recipe most
+exposed to the split) retaining the largest gain against its
+Post-012 build pair (5.20–5.23ms); no split-attributable regression
+is read. The R4 emitter-parity re-probe lives in DECISION.md.
+
 ## Run-offs (once, not a gate)
 
 Once per serious challenger, same examples, same machine, same

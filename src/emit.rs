@@ -156,9 +156,132 @@ pub fn f64_cell(out: &mut String, col_letters: &str, row: &str, v: f64) {
     }
 }
 
+/// `fmt::Write` over a byte buffer, so the `f64` spelling writes
+/// straight into the arena with the same bytes as the `String`
+/// oracle (`write!(out, "{v}")` in [`f64_cell`]).
+struct VecFmt<'a>(&'a mut Vec<u8>);
+
+impl std::fmt::Write for VecFmt<'_> {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.0.extend_from_slice(s.as_bytes());
+        Ok(())
+    }
+}
+
+/// Decimal digits of one integer into a byte buffer: the same
+/// `DEC_PAIRS` spelling as [`push_i64`], one slice append.
+#[inline]
+pub(crate) fn push_i64_bytes(out: &mut Vec<u8>, v: i64) {
+    if v < 0 {
+        out.push(b'-');
+    }
+    push_magnitude_bytes(out, v.unsigned_abs());
+}
+
+/// Decimal digits of one `usize` into a byte buffer.
+#[inline]
+pub(crate) fn push_usize_bytes(out: &mut Vec<u8>, v: usize) {
+    push_magnitude_bytes(out, v as u64);
+}
+
+#[inline]
+fn push_magnitude_bytes(out: &mut Vec<u8>, mut mag: u64) {
+    let mut buf: [u8; 20] = [0; 20];
+    let mut i: usize = 20;
+    while mag >= 100 {
+        let pair: usize = (mag % 100) as usize;
+        mag /= 100;
+        i -= 2;
+        buf[i] = DEC_PAIRS[2 * pair];
+        buf[i + 1] = DEC_PAIRS[2 * pair + 1];
+    }
+    if mag >= 10 {
+        let pair: usize = mag as usize;
+        i -= 2;
+        buf[i] = DEC_PAIRS[2 * pair];
+        buf[i + 1] = DEC_PAIRS[2 * pair + 1];
+    } else {
+        i -= 1;
+        buf[i] = b'0' + mag as u8;
+    }
+    out.extend_from_slice(&buf[i..]);
+}
+
+/// Header-text escape into a byte buffer: the same five spellings
+/// as [`escape_into`], fragments as byte constants.
+pub(crate) fn escape_into_bytes(out: &mut Vec<u8>, text: &str) {
+    for c in text.chars() {
+        match c {
+            '&' => out.extend_from_slice(b"&amp;"),
+            '<' => out.extend_from_slice(b"&lt;"),
+            '>' => out.extend_from_slice(b"&gt;"),
+            '"' => out.extend_from_slice(b"&quot;"),
+            '\'' => out.extend_from_slice(b"&apos;"),
+            _ => {
+                let mut buf: [u8; 4] = [0; 4];
+                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
+            }
+        }
+    }
+}
+
+/// Header cell into a byte buffer: byte-identical to
+/// [`header_cell`].
+pub(crate) fn header_cell_bytes(out: &mut Vec<u8>, col: usize, name: &str) {
+    let letters: String = col_letters(col);
+    out.extend_from_slice(b"<c r=\"");
+    out.extend_from_slice(letters.as_bytes());
+    out.extend_from_slice(b"1\" t=\"inlineStr\" s=\"1\"><is><t>");
+    escape_into_bytes(out, name);
+    out.extend_from_slice(b"</t></is></c>");
+}
+
+/// One numeric i64 cell into a byte buffer: byte-identical to
+/// [`i64_cell`], with the oracle's append shape (open, digits or
+/// blank close, close). `row` is the row digits as bytes,
+/// formatted once and shared across the row's cells. A
+/// precomputed per-column prefix spelling was measured slower
+/// (runtime-length appends lose to constant-length ones), so the
+/// open stays two constant appends plus the letters.
+#[inline]
+pub(crate) fn i64_cell_bytes(out: &mut Vec<u8>, col_letters: &str, row: &[u8], v: i64) {
+    out.extend_from_slice(b"<c r=\"");
+    out.extend_from_slice(col_letters.as_bytes());
+    out.extend_from_slice(row);
+    if v == NULL_I64 {
+        out.extend_from_slice(b"\"/>");
+    } else {
+        out.extend_from_slice(b"\"><v>");
+        push_i64_bytes(out, v);
+        out.extend_from_slice(b"</v></c>");
+    }
+}
+
+/// One numeric f64 cell into a byte buffer: byte-identical to
+/// [`f64_cell`] (NaN blank, the `Display` spelling write-through).
+#[inline]
+pub(crate) fn f64_cell_bytes(out: &mut Vec<u8>, col_letters: &str, row: &[u8], v: f64) {
+    out.extend_from_slice(b"<c r=\"");
+    out.extend_from_slice(col_letters.as_bytes());
+    out.extend_from_slice(row);
+    if v.is_nan() {
+        out.extend_from_slice(b"\"/>");
+    } else {
+        out.extend_from_slice(b"\"><v>");
+        if write!(VecFmt(out), "{v}").is_err() {
+            // `Vec<u8>` never fails `fmt::Write`: unreachable by construction.
+            debug_assert!(false);
+        }
+        out.extend_from_slice(b"</v></c>");
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{NULL_I64, col_letters, f64_cell, i64_cell, push_i64};
+    use super::{
+        NULL_I64, col_letters, f64_cell, f64_cell_bytes, header_cell, header_cell_bytes, i64_cell,
+        i64_cell_bytes, push_i64, push_i64_bytes,
+    };
 
     #[test]
     fn letters_roll_over_z() {
@@ -203,6 +326,59 @@ mod tests {
             1_000_000_000,
         ] {
             check(v);
+        }
+    }
+
+    /// Byte sink equals the `String` oracle, cell for cell: integers
+    /// over the direct-spelling sweep, floats over specials plus a
+    /// quarter-step sweep, headers with escapable names.
+    #[test]
+    fn byte_sink_matches_string_oracle() {
+        let mut oracle = String::new();
+        let mut bytes: Vec<u8> = Vec::new();
+        for v in [-100_000i64, -1, 0, 1, 99, 100, 100_000, i64::MAX, NULL_I64] {
+            oracle.clear();
+            bytes.clear();
+            i64_cell(&mut oracle, "A", "2", v);
+            i64_cell_bytes(&mut bytes, "A", b"2", v);
+            assert_eq!(bytes, oracle.as_bytes(), "i64 {v}");
+            oracle.clear();
+            bytes.clear();
+            push_i64(&mut oracle, v);
+            push_i64_bytes(&mut bytes, v);
+            assert_eq!(bytes, oracle.as_bytes(), "digits {v}");
+        }
+        let mut floats: Vec<f64> = vec![
+            0.0,
+            -0.0,
+            1.0,
+            -1.5,
+            0.5,
+            1e300,
+            -1e300,
+            5e-324,
+            -5e-324,
+            f64::MAX,
+            -f64::MAX,
+            f64::MIN_POSITIVE,
+            f64::NAN,
+        ];
+        for i in -1000i64..1000 {
+            floats.push(i as f64 * 0.25);
+        }
+        for v in floats {
+            oracle.clear();
+            bytes.clear();
+            f64_cell(&mut oracle, "B", "7", v);
+            f64_cell_bytes(&mut bytes, "B", b"7", v);
+            assert_eq!(bytes, oracle.as_bytes(), "f64 {v}");
+        }
+        for (col, name) in [(0usize, "t"), (27, "a & <b> \"q\"")] {
+            oracle.clear();
+            bytes.clear();
+            header_cell(&mut oracle, col, name);
+            header_cell_bytes(&mut bytes, col, name);
+            assert_eq!(bytes, oracle.as_bytes(), "header {name}");
         }
     }
 }

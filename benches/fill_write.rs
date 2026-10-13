@@ -120,28 +120,6 @@ fn cells(c: &mut Criterion) {
     group.finish();
 }
 
-/// CRC32 micro-bench: the shipped `crc32` over a statics-sized and a
-/// sheet-sized buffer, so zip-tightening cycles measure this layer
-/// directly instead of inferring it from the floor. One byte is
-/// touched per iteration so no two calls share an input (otherwise
-/// the compiler hoists the pure call out of the loop and the bench
-/// times nothing).
-fn crc32_iter(b: &mut Bencher, buf: &mut [u8]) {
-    b.iter(|| {
-        buf[0] = buf[0].wrapping_add(1);
-        thoth::zip::crc32(buf)
-    });
-}
-
-fn crc(c: &mut Criterion) {
-    let mut group = c.benchmark_group("crc");
-    let mut small = vec![0xA5u8; 4096];
-    group.bench_function("crc32_4k", |b| crc32_iter(b, &mut small));
-    let mut large = vec![0xA5u8; 1 << 20];
-    group.bench_function("crc32_1m", |b| crc32_iter(b, &mut large));
-    group.finish();
-}
-
 /// Three-sheet workbook at bench scale (20k rows on each of two
 /// sheets, one header-only sheet): the multi-sheet baseline 012
 /// inherits. Sheets and columns are built once outside the clock;
@@ -185,6 +163,10 @@ fn multi_sheet(c: &mut Criterion) {
     group.finish();
 }
 
+/// The former `crc` micro-bench group is retired with the public
+/// zip surface (cycle 014): the CRC spelling is internal machinery
+/// now and is measured in context here, as build minus emission.
+///
 /// Phase isolation (cycle 012): per recipe, (a) emission alone —
 /// `sheet_xml` per sheet, summed over the workbook's sheets, result
 /// `black_box`ed, no file touched; (b) build alone — `build_workbook`,
@@ -267,5 +249,5 @@ fn phase(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, fill_write, floor, cells, crc, multi_sheet, phase);
+criterion_group!(benches, fill_write, floor, cells, multi_sheet, phase);
 criterion_main!(benches);
