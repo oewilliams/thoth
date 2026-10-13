@@ -11,12 +11,14 @@
 //! are emitted directly after it, and the CRC and stored sizes are
 //! patched back into the header once the part's length is known. This
 //! module owns only the format primitives (header, central, and end
-//! records), the CRC spellings, and the projected archive length.
+//! records), the CRC spellings, the projected archive length, and the
+//! checked narrowing ([`checked_u32`]) for sheet-dependent lengths.
 //!
-//! This module performs no validation: names, count, and every size
-//! already passed the ingress check in [`crate::xlsx::build_workbook`],
-//! which owns the entry set. Every narrowing cast below names its
-//! covering ingress check on the line.
+//! Entry names and count already passed the ingress check in
+//! [`crate::xlsx::build_workbook`], which owns the entry set.
+//! Sheet-dependent lengths are narrowed through [`checked_u32`] at
+//! the point where they are written in `crate::xlsx`. Every other
+//! narrowing cast below names its covering ingress check on the line.
 //!
 //! Cycle-004 assembler notes (release profile, aarch64): `crc32`
 //! is a 4-insn `crc32x` word loop plus an unrolled `crc32b` tail,
@@ -169,6 +171,21 @@ pub(crate) fn stored_archive_len(entries: &[(usize, usize)]) -> u64 {
         + 22
 }
 
+/// Checked narrowing of a witnessed `usize` length to a zip32 field:
+/// the `u32` when it fits, otherwise `TooLarge` whose `bytes` is
+/// `projected`, the [`stored_archive_len`] the caller supplies for
+/// this refusal: at a part patch, over the actual entries witnessed
+/// up to and including the refusing entry (a running total the
+/// caller maintains with [`entry_sizes`], so no entry list is
+/// rebuilt here); in `finish_archive`, over every witnessed entry.
+/// Pure arithmetic, no allocation: synthetic lengths at the
+/// boundary test it directly.
+pub(crate) fn checked_u32(len: usize, projected: u64) -> Result<u32, crate::xlsx::XlsxError> {
+    u32::try_from(len).map_err(|_| crate::xlsx::XlsxError::TooLarge {
+        bytes: usize::try_from(projected).unwrap_or(usize::MAX),
+    })
+}
+
 // Multi-byte fields are little-endian per the ZIP format. Both
 // helpers stay named so each field keeps its width on the line.
 pub(crate) fn push_u16(out: &mut Vec<u8>, v: u16) {
@@ -195,8 +212,8 @@ pub(crate) fn begin_entry(out: &mut Vec<u8>, name: &[u8]) -> usize {
     push_u32(out, 0); // crc, patched
     push_u32(out, 0); // compressed size, patched
     push_u32(out, 0); // uncompressed size, patched
-    // Cast cover: ingress `name_len <= u16::MAX` refuse in
-    // `crate::xlsx::archive_fits`.
+    // Cast cover: `archive_fits` in `crate::xlsx` refuses a known
+    // entry name past `u16::MAX` before any emission.
     push_u16(out, name.len() as u16);
     push_u16(out, 0); // extra len
     out.extend_from_slice(name);
@@ -204,8 +221,9 @@ pub(crate) fn begin_entry(out: &mut Vec<u8>, name: &[u8]) -> usize {
 }
 
 /// Patch the CRC and the equal stored sizes into the local header
-/// at `offset` (header offsets +14, +18, +22). The caller has
-/// already narrowed `len` under its covering ingress check.
+/// at `offset` (header offsets +14, +18, +22). `len` arrives
+/// narrowed through [`checked_u32`] on the witnessed length at the
+/// patch site in `crate::xlsx`.
 pub(crate) fn patch_local_header(out: &mut [u8], offset: usize, crc: u32, len: u32) {
     out[offset + 14..offset + 18].copy_from_slice(&crc.to_le_bytes());
     out[offset + 18..offset + 22].copy_from_slice(&len.to_le_bytes());
@@ -213,8 +231,9 @@ pub(crate) fn patch_local_header(out: &mut [u8], offset: usize, crc: u32, len: u
 }
 
 /// Append one central-directory record for an entry already
-/// emitted. `len` and `local_offset` arrive narrowed under their
-/// covering ingress checks in `crate::xlsx::archive_fits`.
+/// emitted. `len` and `local_offset` arrive narrowed through
+/// [`checked_u32`] on the witnessed lengths at the write site in
+/// `crate::xlsx`.
 pub(crate) fn write_central_record(
     out: &mut Vec<u8>,
     name: &[u8],
@@ -232,8 +251,8 @@ pub(crate) fn write_central_record(
     push_u32(out, crc);
     push_u32(out, len);
     push_u32(out, len);
-    // Cast cover: ingress `name_len <= u16::MAX` refuse in
-    // `crate::xlsx::archive_fits`.
+    // Cast cover: `archive_fits` in `crate::xlsx` refuses a known
+    // entry name past `u16::MAX` before any emission.
     push_u16(out, name.len() as u16);
     push_u16(out, 0); // extra len
     push_u16(out, 0); // comment len
@@ -245,7 +264,8 @@ pub(crate) fn write_central_record(
 }
 
 /// Append the end record. `central_len` and `central_start`
-/// arrive narrowed under their covering ingress checks.
+/// arrive narrowed through [`checked_u32`] on the witnessed
+/// lengths at the write site in `crate::xlsx`.
 pub(crate) fn write_end_record(
     out: &mut Vec<u8>,
     count: usize,
@@ -255,8 +275,8 @@ pub(crate) fn write_end_record(
     push_u32(out, 0x0605_4B50); // end signature
     push_u16(out, 0); // disk
     push_u16(out, 0); // central disk
-    // Cast cover: ingress `count <= u16::MAX` refuse in
-    // `crate::xlsx::archive_fits`.
+    // Cast cover: `archive_fits` in `crate::xlsx` refuses a known
+    // entry count past `u16::MAX` before any emission.
     push_u16(out, count as u16);
     push_u16(out, count as u16);
     push_u32(out, central_len);
@@ -267,9 +287,10 @@ pub(crate) fn write_end_record(
 #[cfg(test)]
 mod tests {
     use super::{
-        CRC_INIT, begin_entry, crc32, crc32_finish, crc32_update, patch_local_header,
+        CRC_INIT, begin_entry, checked_u32, crc32, crc32_finish, crc32_update, patch_local_header,
         stored_archive_len, write_central_record, write_end_record,
     };
+    use crate::xlsx::XlsxError;
 
     #[test]
     fn crc_is_ieee() {
@@ -302,6 +323,27 @@ mod tests {
     }
 
     #[test]
+    fn checked_u32_narrows_at_the_u32_boundary() {
+        let sizes: [(usize, usize); 2] = [(3, 1), (4, 2)];
+        let projected: u64 = stored_archive_len(&sizes);
+        assert_eq!(checked_u32(0, projected).unwrap(), 0);
+        assert_eq!(checked_u32(u32::MAX as usize, projected).unwrap(), u32::MAX);
+        for len in [u32::MAX as usize + 1, u32::MAX as usize + 4096] {
+            match checked_u32(len, projected) {
+                Err(XlsxError::TooLarge { bytes }) => {
+                    assert_eq!(bytes, usize::try_from(projected).unwrap(), "len {len}");
+                }
+                other => panic!("len {len}: want TooLarge, got {other:?}"),
+            }
+        }
+        // An empty witnessed set projects to the end record alone.
+        match checked_u32(u32::MAX as usize + 1, 22) {
+            Err(XlsxError::TooLarge { bytes }) => assert_eq!(bytes, 22),
+            other => panic!("want TooLarge, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn archive_len_counts_headers_once() {
         assert_eq!(stored_archive_len(&[]), 22);
         assert_eq!(stored_archive_len(&[(3, 1)]), 22 + 30 + 1 + 3 + 46 + 1);
@@ -318,20 +360,39 @@ mod tests {
         let parts: [(&str, &[u8]); 2] = [("a.txt", b"hello"), ("b/c.xml", b"<x/>")];
         let mut out: Vec<u8> = Vec::new();
         let mut entries: Vec<(Vec<u8>, u32, usize, usize)> = Vec::new();
+        let mut sizes: Vec<(usize, usize)> = Vec::new();
         for (name, data) in parts {
             let offset: usize = begin_entry(&mut out, name.as_bytes());
             let start: usize = out.len();
             out.extend_from_slice(data);
             let crc: u32 = crc32(&out[start..]);
-            patch_local_header(&mut out, offset, crc, data.len() as u32);
+            sizes.push((data.len(), name.len()));
+            patch_local_header(
+                &mut out,
+                offset,
+                crc,
+                checked_u32(data.len(), stored_archive_len(&sizes)).unwrap(),
+            );
             entries.push((name.as_bytes().to_vec(), crc, data.len(), offset));
         }
         let central_start: usize = out.len();
+        let projected: u64 = stored_archive_len(&sizes);
         for (name, crc, len, offset) in &entries {
-            write_central_record(&mut out, name, *crc, *len as u32, *offset as u32);
+            write_central_record(
+                &mut out,
+                name,
+                *crc,
+                checked_u32(*len, projected).unwrap(),
+                checked_u32(*offset, projected).unwrap(),
+            );
         }
-        let central_len: u32 = (out.len() - central_start) as u32;
-        write_end_record(&mut out, entries.len(), central_len, central_start as u32);
+        let central_len: u32 = checked_u32(out.len() - central_start, projected).unwrap();
+        write_end_record(
+            &mut out,
+            entries.len(),
+            central_len,
+            checked_u32(central_start, projected).unwrap(),
+        );
         let got: Vec<u8> = out;
         const EXPECTED: [u8; 207] = [
             0x50, 0x4b, 0x03, 0x04, 0x14, 0x00, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,

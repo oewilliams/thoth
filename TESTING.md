@@ -1322,6 +1322,65 @@ the 4 new styles tests, clippy `-D warnings`, docs, and the
 macro compile-fail doctests for an unknown colour, two colours,
 and a repeated `bold`).
 
+Post-019 (ceiling verdict from witnessed lengths), this machine
+(Darwin 27.0.0 arm64, Apple M4, `RELEASE_ARM64_T8132`), bench
+profile (inherits `--release`: `overflow-checks = true`,
+`codegen-units = 1`), rustc 1.93.1, commit `3c1c266` plus the
+uncommitted 018 work as the pre-cycle tree (byte-identity below is
+against that tree, styles part included), plus the uncommitted
+019 work. Probes are `/tmp` scratch crates against `thoth` by
+path; data preparation is outside every clock below.
+
+(a) Byte-identity held. A `/tmp` dump probe compared
+`build_workbook` output byte for byte (`cmp`) against the
+pre-cycle tree at 200_000 rows on ints (10471536), floats
+(10871537), null (10471598), mixed (17049378), strings/bools
+(17471636), a styled small sheet, the three-sheet recipe
+(21339645), and a small sheet: identical on every recipe.
+`sheet_cap` arithmetic and the oracle are untouched, and
+`sheet_cap_holds` still proves the actual never exceeds the cap.
+
+(b) Spec-sheet probe (scratch, simplified trunk: three sheets
+`SchCF`/`SchCF_ED`/`SchCF_GU` at 8,880 rows x 1,298 `f64`
+columns, every bucket `0.0` — the `workbook_spec_sheet.md` §1
+shape with the trunk's mixed kinds simplified to float columns;
+one shared borrowed data set, `build_workbook` timed, best of 5
+builds in one process; peak RSS from `/usr/bin/time -l`
+"maximum resident set size", one build held alive to exit, three
+processes each):
+
+| probe | data cells | actual bytes | best time | MB/s | peak RSS |
+|---|---|---|---|---|---|
+| three sheets | 34,578,720 | 910684538 | 533.5ms | 1706.9 | 913358848–913375232 |
+| one sheet | 11,526,240 | 303564288 | 179.8ms | 1688.2 | 306135040 |
+
+The `sheet_cap` projection of the same workbook is 4,097,199,826
+bytes per sheet, 12,291,599,478 over three sheets — past the
+4,294,967,295 ceiling the actual 910,684,538 fits. The gated
+spelling of the same shape is blank-heavy (`tests/ceiling.rs`:
+`NaN` blanks at the same 327-byte cap price, one `0.0` column):
+projection past the ceiling, actual 530,611,658 bytes, asserted
+as projection > ceiling >= actual in the test itself so a cap
+change that untests it fails loudly. No bench recipe joins
+`benches/fill_write.rs` for this shape: a stored ~911 MB build
+per criterion iteration is not a bench, so the probe stays in
+scratch. No speed claim beyond these reads.
+
+(c) Existing recipes unregressed on interleaved reads (scratch
+timing probe, pre-cycle and post-019 binaries alternated, three
+processes of 15 builds per recipe per side, medians quoted as
+ranges; byte-identity in (a) asserted first): ints pre
+3.69–4.38ms vs post 3.95–4.03ms, floats pre 9.20–9.34ms vs post
+8.79–8.84ms (below pre, not claimed), null pre 4.43–4.55ms vs
+post 4.43–4.62ms, mixed pre 11.48–11.61ms vs post
+11.62–11.78ms, three-sheet pre 13.46–13.50ms vs post
+13.16–13.23ms (below pre, not claimed). The post ranges touch,
+overlap, or sit a few percent to either side of their pre ranges
+(mixed a few percent above, floats and three-sheet below), with
+per-process best builds agreeing on every recipe: no regression
+beyond the interleaved spread is read, and no speedup is
+claimed.
+
 ## Run-offs (once, not a gate)
 
 Once per serious challenger, same examples, same machine, same

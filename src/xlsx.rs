@@ -5,14 +5,15 @@
 //! columnar slices, checked rectangular once at the boundary.
 //! Every sheet reaches emission through the template contract in
 //! `crate::contract`: the builder consumes the declared shape for
-//! validation, the ceiling check, and the reservation, and the
-//! arena emission is driven by the contract's generic drivers.
+//! validation and the reservation, and the arena emission is driven
+//! by the contract's generic drivers. Sheet-dependent ceiling
+//! verdicts are taken on witnessed lengths at the narrowing casts.
 
 use std::path::{Path, PathBuf};
 
 use crate::contract::{
     ARENA_BLOCK, Column, DynamicSheet, Kind, SheetTemplate, emit_sheet, emit_sheet_arena,
-    sheet_cap, sheet_hint, sheet_letters, validate_template,
+    sheet_hint, sheet_letters, validate_template,
 };
 use crate::static_parts::{RELS, STYLES};
 use crate::workbook_parts::{
@@ -20,8 +21,8 @@ use crate::workbook_parts::{
     workbook_xml,
 };
 use crate::zip::{
-    begin_entry, crc32, patch_local_header, stored_archive_len, write_central_record,
-    write_end_record,
+    begin_entry, checked_u32, crc32, entry_sizes, patch_local_header, stored_archive_len,
+    write_central_record, write_end_record,
 };
 
 pub use crate::contract::ColumnData;
@@ -63,8 +64,16 @@ pub enum XlsxError {
     TooManyRows(usize),
     TooManyColumns(usize),
     /// The finished archive would not fit the 32-bit zip fields:
-    /// `bytes` is its projected length (see `crate::zip`
-    /// `stored_archive_len`).
+    /// `bytes` is a projected length computed from witnessed
+    /// lengths (see `crate::zip` `stored_archive_len`), scoped by
+    /// refusal site. Before emission it is `stored_archive_len`
+    /// over the known sizes alone (sheets priced at zero data
+    /// length, so it excludes sheet payload). At a sheet refusal
+    /// it is `stored_archive_len` over the actual entries up to
+    /// and including the refusing entry, a lower bound on the
+    /// finished archive. In `finish_archive` it is
+    /// `stored_archive_len` over every witnessed entry, the
+    /// projected finished length.
     TooLarge {
         bytes: usize,
     },
@@ -268,10 +277,12 @@ pub const MAX_ROWS: usize = 1_048_576;
 pub const MAX_COLS: usize = 16_384;
 
 /// Zip32 ceilings in the address width: compile-time values, so the
-/// check below compares without casting. Every part length, every
-/// local header offset, and the central directory offset and length
-/// must each fit `u32`; the entry count and every name length must
-/// each fit `u16`.
+/// check below compares without casting. What is known exactly
+/// before emission must each fit its field: the entry count and
+/// every name length in `u16`, and the small parts' lengths and
+/// section totals over known entries in `u32`. Sheet-dependent
+/// lengths fit only when witnessed, at their narrowing casts
+/// through `crate::zip::checked_u32`.
 const DATA_MAX: usize = u32::MAX as usize;
 const NAME_MAX: usize = u16::MAX as usize;
 const COUNT_MAX: usize = u16::MAX as usize;
@@ -280,30 +291,27 @@ const COUNT_MAX: usize = u16::MAX as usize;
 /// still refuses correctly), so the totals compare up here.
 const TOTAL_MAX: u64 = u32::MAX as u64;
 
-/// Whether an archive with the given entry sizes fits the 32-bit
-/// zip fields without zip64. Each tuple is `(data_len, name_len)`,
-/// as in `crate::zip::stored_archive_len`. Pure size arithmetic,
-/// no allocation: the build path calls it before any emission, so
-/// no narrowing cast on the arena path ever truncates. This check
-/// lives at the ingress boundary ([`build_workbook`], which owns
-/// the entry set), not in the zip module. Arena-path sizes are the
-/// small parts' actual lengths where known and, for sheets, the
-/// `sheet_cap` worst-case projection (now spelled in
-/// `crate::contract`) — conservative, named here because a sheet's
-/// actual length exists only after emission; `sheet_cap_holds`
-/// proves the actual never exceeds it, so a cast covered for the
-/// projection is covered for the actual. Every category is checked
-/// explicitly, cast for cast:
+/// Whether the given known entry sizes fit the 32-bit zip fields
+/// without zip64. Each tuple is `(data_len, name_len)`, as in
+/// `crate::zip::stored_archive_len`. Pure size arithmetic, no
+/// allocation: [`build_workbook`] calls it before any emission
+/// with what is exact at the boundary — entry count, every entry
+/// name length, the small parts at actual length, and sheets at
+/// zero data length (their names alone price the central
+/// directory, which depends on names and count only). A sheet's
+/// actual length is not an input here: it is checked through
+/// `checked_u32` where it is patched, as are each entry's local
+/// offset and the central start and length where they are
+/// written. Over the sizes given, every category is checked:
 ///
-/// - `data_len <= DATA_MAX` covers each entry length narrowed to
-///   `u32` (patched local sizes, central record);
+/// - `data_len <= DATA_MAX` for each known length;
 /// - `name_len <= NAME_MAX` covers each `name.len() as u16`
 ///   (local header, central record);
 /// - `len <= COUNT_MAX` covers the count narrowed to `u16`
 ///   (end record);
-/// - the local-section total covers each local-header offset
-///   narrowed to `u32` (central record) and the central start;
-/// - the central-section total covers `central_len` as `u32`.
+/// - the local-section total over the known sizes;
+/// - the central-section total covers `central_len` over known
+///   entries (names and count).
 fn archive_fits(sizes: &[(usize, usize)]) -> bool {
     if sizes.len() > COUNT_MAX {
         return false;
@@ -335,17 +343,21 @@ fn archive_fits(sizes: &[(usize, usize)]) -> bool {
 fn emit_small_part(
     out: &mut Vec<u8>,
     entries: &mut Vec<(String, u32, usize, usize)>,
+    projected: &mut u64,
     name: &str,
     data: &[u8],
-) {
+) -> Result<(), XlsxError> {
     let offset: usize = begin_entry(out, name.as_bytes());
     let start: usize = out.len();
     out.extend_from_slice(data);
     let crc: u32 = crc32(&out[start..]);
-    // Cast cover: ingress `data_len <= DATA_MAX` refuse in
-    // `archive_fits` (the small parts enter it at actual length).
-    patch_local_header(out, offset, crc, data.len() as u32);
+    // Witnessed length, narrowed through `checked_u32` at the patch;
+    // `projected` is `stored_archive_len` over the entries so far.
+    let with_this: u64 = *projected + entry_sizes(data.len(), name.len());
+    patch_local_header(out, offset, crc, checked_u32(data.len(), with_this)?);
+    *projected = with_this;
     entries.push((name.to_string(), crc, data.len(), offset));
+    Ok(())
 }
 
 /// Build the sheet XML for the given columns (declaration order).
@@ -374,8 +386,11 @@ fn emit_parts<T: SheetTemplate>(
     small_parts: [(&str, &[u8]); 5],
 ) -> Result<(), XlsxError> {
     let mut entries: Vec<(String, u32, usize, usize)> = Vec::with_capacity(5 + sheets.len());
+    // Running `stored_archive_len` over the witnessed entries
+    // (the 22-byte end record, then one footprint per entry).
+    let mut projected: u64 = 22;
     for (name, data) in small_parts {
-        emit_small_part(out, &mut entries, name, data);
+        emit_small_part(out, &mut entries, &mut projected, name, data)?;
     }
     for (i, sheet) in sheets.iter().enumerate() {
         let name: String = sheet_part_name(i + 1);
@@ -389,26 +404,45 @@ fn emit_parts<T: SheetTemplate>(
                 }
             })?;
         let len: usize = out.len() - start;
-        // Cast cover: the sheet's checked `sheet_cap` projection in
-        // `archive_fits` (`data_len <= DATA_MAX`), which the actual
-        // length never exceeds (`sheet_cap_holds`).
-        patch_local_header(out, offset, crc, len as u32);
+        // Witnessed sheet length, narrowed through `checked_u32`
+        // at the patch into the local header. At this refusal
+        // `with_this` is `stored_archive_len` over the actual
+        // entries up to and including this sheet.
+        let with_this: u64 = projected + entry_sizes(len, name.len());
+        patch_local_header(out, offset, crc, checked_u32(len, with_this)?);
+        projected = with_this;
         entries.push((name, crc, len, offset));
     }
-    // Cast cover: the local-section total in `archive_fits` bounds
-    // the central start; every local offset precedes it.
-    let central_start: u32 = out.len() as u32;
-    for (name, crc, len, offset) in &entries {
-        // Cast covers: entry lengths as above (actual for small
-        // parts, projection-bounded for sheets); local offsets
-        // bounded by the same local-section total.
-        write_central_record(out, name.as_bytes(), *crc, *len as u32, *offset as u32);
+    finish_archive(out, &entries, projected)
+}
+
+/// Write the central directory and end record over the witnessed
+/// entries. `projected` is the finished length over every entry.
+fn finish_archive(
+    out: &mut Vec<u8>,
+    entries: &[(String, u32, usize, usize)],
+    projected: u64,
+) -> Result<(), XlsxError> {
+    // Witnessed central start, narrowed through `checked_u32`
+    // before the central records are written; the value is
+    // written into the end record below.
+    let central_start_len: usize = out.len();
+    let central_start: u32 = checked_u32(central_start_len, projected)?;
+    for (name, crc, len, offset) in entries {
+        // Witnessed entry length and local offset, each narrowed
+        // through `checked_u32` where it is written.
+        write_central_record(
+            out,
+            name.as_bytes(),
+            *crc,
+            checked_u32(*len, projected)?,
+            checked_u32(*offset, projected)?,
+        );
     }
-    // Cast cover: the central-section total in `archive_fits`
-    // bounds `central_len`; the subtraction cannot underflow by
-    // construction (`central_start` is an earlier length of this
-    // same buffer, widened back losslessly here).
-    let central_len: u32 = (out.len() - central_start as usize) as u32;
+    // Witnessed central length, narrowed through `checked_u32`
+    // where it is written; the subtraction cannot underflow
+    // (`central_start_len` is an earlier length of this buffer).
+    let central_len: u32 = checked_u32(out.len() - central_start_len, projected)?;
     write_end_record(out, entries.len(), central_len, central_start);
     Ok(())
 }
@@ -456,12 +490,17 @@ pub fn build_workbook<T: SheetTemplate>(sheets: &[T]) -> Result<Vec<u8>, XlsxErr
     }
     for (i, sheet) in sheets.iter().enumerate() {
         let name_len: usize = sheet_part_name(i + 1).len();
-        sizes.push((sheet_cap(sheet, row_counts[i], &letters[i]), name_len));
+        // Known before emission: the sheet name alone. Its data
+        // length is witnessed only after emission and is checked
+        // at the narrowing casts in `emit_parts`.
+        sizes.push((0, name_len));
         let hint: usize = sheet_hint(sheet, &letters[i]).unwrap_or(ARENA_BLOCK);
         hint_sizes.push((hint, name_len));
     }
-    // Zip32 ceiling, before any arena byte is written: refuse past
-    // it rather than truncate (cast-for-cast in `archive_fits`).
+    // What is known exactly before emission is checked before
+    // emission: entry count, entry names, small-part lengths and
+    // totals, and central length over the known entries. No
+    // estimate refuses here: sheet lengths are witnessed later.
     if !archive_fits(&sizes) {
         let total: u64 = stored_archive_len(&sizes);
         // Error payload only: saturates where `u64` exceeds `usize`.
@@ -470,10 +509,10 @@ pub fn build_workbook<T: SheetTemplate>(sheets: &[T]) -> Result<Vec<u8>, XlsxErr
     }
     // Reservation: one allocation from the declared shapes, so the
     // known-shape path does not reallocate; an unknown dimension
-    // spells `ARENA_BLOCK` here and grows in blocks. `sheet_cap`
-    // stays the worst-case proof, not the reservation. The
-    // conversion saturates only past `usize`, where
-    // `with_capacity` aborts loudly rather than truncating.
+    // spells `ARENA_BLOCK` here and grows in blocks. The hint is
+    // the reservation, never a refusal. The conversion saturates
+    // only past `usize`, where `with_capacity` aborts loudly
+    // rather than truncating.
     let reservation: usize = usize::try_from(stored_archive_len(&hint_sizes)).unwrap_or(usize::MAX);
     let mut out: Vec<u8> = Vec::with_capacity(reservation);
     let small_parts: [(&str, &[u8]); 5] = [

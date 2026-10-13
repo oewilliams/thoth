@@ -1,5 +1,6 @@
 use super::{ColumnData, WriteError, XlsxError, archive_fits, build_workbook, build_xlsx};
 use crate::contract::{Colour, Column, DynamicSheet, Kind, Style, sheet_cap, sheet_letters};
+use crate::zip::{checked_u32, stored_archive_len};
 
 #[test]
 fn too_large_states_the_ceiling() {
@@ -50,6 +51,31 @@ fn archive_fits_bounds_central_directory_length() {
     // passes the `u32` ceiling, so the archive refuses.
     let entries: Vec<(usize, usize)> = vec![(0, u16::MAX as usize); u16::MAX as usize];
     assert!(!archive_fits(&entries));
+}
+
+/// Every sheet-dependent narrowing (sheet length, local offset,
+/// central start, central length) goes through the one checked
+/// spelling, so synthetic lengths cover each of them with no
+/// allocation: at `u32::MAX` it narrows, past it it refuses with
+/// `TooLarge` priced from the witnessed entries.
+#[test]
+fn checked_narrowing_refuses_past_the_u32_boundary() {
+    let max: usize = u32::MAX as usize;
+    let witnessed: [(usize, usize); 3] = [(100, 22), (200, 22), (300, 22)];
+    let projected: u64 = stored_archive_len(&witnessed);
+    let want_bytes: usize = usize::try_from(projected).unwrap();
+    for len in [0_usize, 1, max - 1, max] {
+        assert_eq!(
+            checked_u32(len, projected).unwrap(),
+            u32::try_from(len).unwrap()
+        );
+    }
+    for len in [max + 1, max + 88_000] {
+        match checked_u32(len, projected) {
+            Err(XlsxError::TooLarge { bytes }) => assert_eq!(bytes, want_bytes),
+            other => panic!("len {len}: want TooLarge, got {other:?}"),
+        }
+    }
 }
 
 #[test]

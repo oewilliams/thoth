@@ -543,8 +543,11 @@ fn first_text_error(views: &[ColumnView<'_>]) -> Option<XlsxError> {
 /// Worst-case sheet bytes (20 per `I64`, 327 per `F64`, the fixed
 /// bool spelling, and per string cell the escaped upper bound of
 /// the actual text at 6x per char plus tags; header names priced
-/// at the same escaped bound): the ceiling proof, never the
-/// reservation.
+/// at the same escaped bound): the oracle's `String` capacity in
+/// `emit_sheet` and the `sheet_cap_holds` proof that the actual
+/// never exceeds it. Never the reservation and never a refusal:
+/// the ceiling verdict is taken on witnessed lengths at the
+/// narrowing casts in `crate::xlsx`.
 pub fn sheet_cap<T: SheetTemplate>(template: &T, nrows: usize, letters: &[String]) -> usize {
     let cell_tags: usize = "<c r=\"".len() + "\"><v>".len() + "</v></c>".len();
     let mut cap: usize = 256 + 12;
