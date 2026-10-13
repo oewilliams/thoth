@@ -103,3 +103,55 @@ bytes (10470009/10870010) match the recorded TESTING.md recipes exactly;
 Harness: `/tmp/thoth-runoff-008` (throwaway crate, thoth by path dep);
 full run log with per-round lines is `run.log` beside it. The harness
 is ephemeral; the table and samples above are the durable record.
+
+## Results — second run, 2026-10-13 (post cycles 018–019)
+
+- Machine: Darwin 27.0.0 arm64, Apple M4 (10 cores), 16 GB RAM.
+  Toolchain: `rustc 1.93.1`; `--release` with `overflow-checks = true`,
+  `codegen-units = 1` in the throwaway crate, so both sides built
+  under identical settings.
+- Thoth: commit `a0fddc9` (cycle 019). Challenger:
+  `rust_xlsxwriter =0.99.1` (pinned), default in-memory worksheet,
+  deflated output; per-column formats through the `*_with_format`
+  spellings (bold/background for the `styled` example, plain format
+  elsewhere). Verification reader: `calamine =0.36.1` (untimed).
+- `simple_xlsx_writer`: not re-run; the Cycle 008 coverage gate
+  stands (its `CellValue` has no blank variant).
+- Method: 1 warmup + best-of-5 timed iterations per side per
+  example, sides run sequentially (not interleaved, unlike 008).
+  Timed section is fill/construct plus file write only. Every timed
+  file verified untimed: thoth through the store reader (stored
+  entries), challenger through calamine (deflated entries), both
+  against the same `expected`. One reader caveat: calamine reads
+  the challenger's empty-string cells as blank, so `Text("")` and
+  blank are normalised for the challenger comparison only; thoth's
+  empty string is verified distinct from blank by its own reader.
+- Extra recipe `spec_buckets1` (not a store example): one sheet at
+  the `external/workbook_spec_sheet.md` §1 shape — 8,880 rows ×
+  1,298 columns (98 mixed trunk columns plus 1,200 mostly-`0.0`
+  float buckets), spot-verified by row count and named cells after
+  a full parse on each side.
+- Absolute figures only (STYLE register 6).
+
+| date | example | thoth ms | challenger | challenger ms | thoth bytes | challenger bytes |
+| ---- | ------- | -------- | ---------- | ------------- | ----------- | ---------------- |
+| 2026-10-13 | ints_floats | 0.3 | rust_xlsxwriter 0.99.1 | 0.7 | 5028 | 5502 |
+| 2026-10-13 | nulls_blank | 0.2 | rust_xlsxwriter 0.99.1 | 0.6 | 5001 | 5494 |
+| 2026-10-13 | header_only | 0.2 | rust_xlsxwriter 0.99.1 | 0.5 | 4898 | 5467 |
+| 2026-10-13 | all_null_column | 0.2 | rust_xlsxwriter 0.99.1 | 0.5 | 4998 | 5487 |
+| 2026-10-13 | wide | 0.2 | rust_xlsxwriter 0.99.1 | 0.5 | 7810 | 5907 |
+| 2026-10-13 | tall (n=200000) | 15.3 | rust_xlsxwriter 0.99.1 | 267.3 | 17049378 | 1975665 |
+| 2026-10-13 | tall_ints (n=200000) | 5.7 | rust_xlsxwriter 0.99.1 | 194.7 | 10471536 | 1256933 |
+| 2026-10-13 | tall_floats (n=200000) | 11.7 | rust_xlsxwriter 0.99.1 | 197.7 | 10871537 | 1292930 |
+| 2026-10-13 | mixed_kinds | 0.1 | rust_xlsxwriter 0.99.1 | 0.4 | 5536 | 5611 |
+| 2026-10-13 | styled | 0.1 | rust_xlsxwriter 0.99.1 | 0.4 | 5423 | 5675 |
+| 2026-10-13 | spec_buckets1 | 254.1 | rust_xlsxwriter 0.99.1 | 4044.1 | 310909948 | 30820751 |
+
+"ms" is best-of-5. Small-example times sit at the display floor; the
+load-bearing rows are the talls and `spec_buckets1`. Compression
+mode embeds a design difference as in 008: thoth stored (method 0),
+challenger deflated (method 8) — on `spec_buckets1` that is
+310,909,948 stored bytes against 30,820,751 deflated for the same
+cells, written in 254.1 ms against 4,044.1 ms. Harness:
+`/tmp/thoth-runoff-020` (throwaway crate, thoth by path dep); the
+harness is ephemeral and the table above is the durable record.
