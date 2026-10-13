@@ -362,6 +362,14 @@ mod tests {
             -f64::MAX,
             f64::MIN_POSITIVE,
             f64::NAN,
+            // 301-digit positional extremes and the subnormal floor:
+            // the widest `Display` spellings, pinned byte for byte.
+            1e308,
+            -1e308,
+            1.5e300,
+            2.225073858507201e-308,
+            1e-310,
+            123_456_789.123_456_79,
         ];
         for i in -1000i64..1000 {
             floats.push(i as f64 * 0.25);

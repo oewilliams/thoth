@@ -81,6 +81,36 @@ fn infinite_names_the_excel_row() {
     assert!(err.contains("row 3"), "{err}");
 }
 
+/// The boundary scan names the first infinite in row-major order:
+/// column b at row 2 beats column a at row 3.
+#[test]
+fn infinite_names_first_in_row_major_order() {
+    let a: Vec<f64> = vec![1.0, f64::INFINITY];
+    let b: Vec<f64> = vec![f64::NEG_INFINITY, 1.0];
+    let cols: Vec<(Column, ColumnData<'_>)> = vec![
+        (
+            Column {
+                name: "a".to_string(),
+                kind: Kind::F64,
+            },
+            ColumnData::F64(&a),
+        ),
+        (
+            Column {
+                name: "b".to_string(),
+                kind: Kind::F64,
+            },
+            ColumnData::F64(&b),
+        ),
+    ];
+    let template: DynamicSheet<'_> = DynamicSheet::known("data".to_string(), &cols);
+    let err: String = super::sheet_xml_template(&template)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("\"b\""), "{err}");
+    assert!(err.contains("row 2"), "{err}");
+}
+
 /// The message states data rows and the sheet total.
 #[test]
 fn too_many_rows_states_data_and_total() {

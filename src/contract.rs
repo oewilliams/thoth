@@ -287,8 +287,8 @@ pub fn sheet_letters<T: SheetTemplate>(template: &T) -> Vec<String> {
 }
 
 /// Boundary check before any emission: non-empty, within Excel's
-/// limits, rectangular, declared kinds matching their data.
-/// Returns the data row count.
+/// limits, rectangular, declared kinds matching their data, and
+/// no infinite floats. Returns the data row count.
 pub fn validate_template<T: SheetTemplate>(template: &T) -> Result<usize, XlsxError> {
     let views: Vec<ColumnView<'_>> = template.columns_view();
     if views.is_empty() {
@@ -320,6 +320,20 @@ pub fn validate_template<T: SheetTemplate>(template: &T) -> Result<usize, XlsxEr
     }
     if nrows + 1 > MAX_ROWS {
         return Err(XlsxError::TooManyRows(nrows));
+    }
+    // Values are checked here, at the boundary; past it the data
+    // is bits. First infinite in row-major order names the refusal.
+    for r in 0..nrows {
+        for view in &views {
+            if let ColumnData::F64(v) = view.data
+                && v[r].is_infinite()
+            {
+                return Err(XlsxError::Infinite {
+                    column: view.name.to_string(),
+                    row: r + 2,
+                });
+            }
+        }
     }
     Ok(nrows)
 }
@@ -362,7 +376,7 @@ pub fn sheet_hint<T: SheetTemplate>(template: &T, letters: &[String]) -> Option<
 }
 
 /// Emit one sheet's XML (the oracle spelling). Assumes
-/// `validate_template` passed; only an infinite float can refuse.
+/// `validate_template` passed; writes bits, checks nothing.
 pub fn emit_sheet<T: SheetTemplate>(template: &T, nrows: usize) -> Result<Vec<u8>, XlsxError> {
     let letters: Vec<String> = sheet_letters(template);
     let mut out = String::with_capacity(sheet_cap(template, nrows, &letters));
@@ -387,16 +401,7 @@ pub fn emit_sheet<T: SheetTemplate>(template: &T, nrows: usize) -> Result<Vec<u8
         for (view, letter) in views.iter().zip(letters.iter()) {
             match view.data {
                 ColumnData::I64(v) => i64_cell(&mut out, letter, &row_digits, v[r]),
-                ColumnData::F64(v) => {
-                    let x: f64 = v[r];
-                    if x.is_infinite() {
-                        return Err(XlsxError::Infinite {
-                            column: view.name.to_string(),
-                            row: row1,
-                        });
-                    }
-                    f64_cell(&mut out, letter, &row_digits, x);
-                }
+                ColumnData::F64(v) => f64_cell(&mut out, letter, &row_digits, v[r]),
             }
         }
         out.push_str("</row>");
@@ -439,16 +444,7 @@ pub fn emit_sheet_arena<T: SheetTemplate>(
         for (view, letter) in views.iter().zip(letters.iter()) {
             match view.data {
                 ColumnData::I64(v) => i64_cell_bytes(out, letter, &row_digits, v[r]),
-                ColumnData::F64(v) => {
-                    let x: f64 = v[r];
-                    if x.is_infinite() {
-                        return Err(XlsxError::Infinite {
-                            column: view.name.to_string(),
-                            row: row1,
-                        });
-                    }
-                    f64_cell_bytes(out, letter, &row_digits, x);
-                }
+                ColumnData::F64(v) => f64_cell_bytes(out, letter, &row_digits, v[r]),
             }
         }
         out.extend_from_slice(b"</row>");

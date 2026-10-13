@@ -43,7 +43,10 @@ opinionated scope.
 
 Delos is the model: data is the imposition of types on memory. The
 schema is declared, never sniffed. Lengths are checked once at the
-boundary (rectangularity), never per cell.
+boundary (rectangularity), never per cell. Past the boundary the
+payload is bits in memory: value checks (infinities included) happen
+at the interface, and the writers spell bits without inspecting
+what they mean.
 
 - Ingress is borrowed columnar slices (`&[T]`): one pointer plus one
   length over contiguous memory. This already removes per-cell pointer

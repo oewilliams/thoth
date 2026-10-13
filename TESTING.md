@@ -1087,6 +1087,85 @@ and the DESIGN promise, not on an invented speed claim.
 The `static_template` criterion group in
 `benches/fill_write.rs` carries these three benches in-tree.
 
+Post-016 (emitter: the spellings, measured one at a time), this
+machine (Darwin 27.0.0 arm64, Apple M4, `RELEASE_ARM64_T8132`),
+bench profile (inherits `--release`: `overflow-checks = true`,
+`codegen-units = 1`), rustc 1.93.1, commit `3c98e3b` plus the
+uncommitted 016 work. Box during the spells: 1-minute load
+1.5–3.1. Method for every candidate, in order (SPEC R2):
+`/tmp` probe crates against `thoth` by path — HEAD from a
+`git archive` extraction in `/tmp/thoth-head`, candidate from
+the worktree — interleaved A/B with rotating order, seven
+rounds of 15 builds (emissions for C3) per side, the quoted
+figure the median of the round medians; archive byte-identity
+(`cmp` against the HEAD dumps at 200k on ints, floats, null,
+mixed, and the three-sheet recipe) asserted before any timing.
+No sequential Criterion read is used as close-call evidence.
+
+- **C1 — float append shape: reverted.** Format into a fixed
+  512-byte stack scratch (`fmt::Write`, widest `Display`
+  spelling is 327 bytes), then one arena append, write-through
+  fallback on scratch overflow. Byte-identical on every recipe
+  and over the extended probe set (below). Interleaved floats
+  build at 200k: HEAD 9.195ms (rounds 9.159–9.236) vs candidate
+  10.185ms (10.151–10.238), **+10.8%** — the scratch copy and
+  its per-cell zeroing cost more than the per-piece capacity
+  checks it removes. Non-target reads in the same spells were
+  within noise (ints −2.5%, null −4.8% on three rounds, layout
+  drift on an untouched path). Loser reverted; the extended
+  `byte_sink_matches_string_oracle` pin is kept (specials, both
+  zeros, subnormal boundary, quarter-steps, plus the new
+  301-digit positional extremes `1e308`, `1.5e300`, the
+  `2.225073858507201e-308` min-normal and the `1e-310`
+  subnormal) and passes on the incumbent spelling.
+- **C2 — blank path: reverted.** Candidate named, not a
+  rejected shape: the common `"<c r=\""` plus letters prefix
+  stays single and shared, and only the blank arm fuses the
+  shared row digits and `"\"/>"` into one append from a
+  16-byte stack tail (longer rows fall back to two appends) —
+  blank appends 4 → 3, no whole-cell stack assembly, no
+  duplicated cell open. Byte-identical on every recipe.
+  Interleaved null build at 200k: HEAD 4.518ms (4.480–4.672)
+  vs candidate 4.814ms (4.675–4.949), **+6.6%** — well outside
+  the recorded ~1–3% emitter deficit's noise band, in the
+  wrong direction. Reverted; the null deficit stands as
+  recorded in Post-014.
+- **C3 — oracle digit respelling: reverted.** Candidate:
+  `push_magnitude`'s finished digits append as one slice
+  (`from_utf8` on the ASCII-by-construction buffer, per-char
+  fallback unreachable), `int_spelling_matches` sweep
+  unchanged, build-path bytes untouched and confirmed
+  identical. Interleaved oracle emission (`sheet_xml`) on
+  ints at 200k: HEAD 3.902ms (3.737–4.042) vs candidate
+  4.777ms (4.548–4.917), **+22.4%** — the validation and the
+  wider, uninlined body cost more than the per-char pushes.
+  Reverted; the oracle keeps its digit-by-digit spelling and
+  stays the parity benchmark as it stands.
+- **C4 — `unsafe` cursor: refused, no candidate entered.**
+  After C1–C3 no remaining candidate carries a measurement
+  naming the nanoseconds it buys over the best safe spelling
+  (each safe spelling measured slower than its incumbent), so
+  no `unsafe` enters this cycle, per the cycle-004 precedent.
+  The refusal is recorded here for the applicator's
+  `DECISION.md`.
+- **Drivers and boundaries held.** `emit_sheet` /
+  `emit_sheet_arena` in `src/contract.rs` are untouched (no
+  shipped signature, so no forced call-site change);
+  `src/xlsx.rs`, `src/workbook_parts.rs`, `src/zip.rs`,
+  `src/macros.rs` untouched; no new dependencies. The only
+  shipped tree change is the C1 test-pin extension above.
+- **Final build reads** (final tree, same interleaved probe,
+  columns built once outside the clock): floats HEAD 9.087ms
+  vs final 9.075ms (−0.1%), ints 3.939 vs 3.814ms (−3.2%,
+  overlapping rounds, parity), null 4.429 vs 4.421ms (−0.2%);
+  oracle emission ints 3.823 vs 3.856ms (+0.9%), floats 9.289
+  vs 9.242ms (−0.5%). Against the Post-015 baselines (ints
+  3.83–3.92ms, floats 8.90–8.93ms, null 4.45–4.52ms) the
+  final tree reads at parity on every recipe — expected, as
+  no emitter code shipped, and no speed is claimed for this
+  cycle. `cargo fmt` applied, `sh check.sh` green (format,
+  tests, clippy `-D warnings`, docs).
+
 ## Run-offs (once, not a gate)
 
 Once per serious challenger, same examples, same machine, same
