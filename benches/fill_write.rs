@@ -234,6 +234,61 @@ fn phase(c: &mut Criterion) {
         group.bench_function(format!("build_tall_null_{n}"), |b| {
             b.iter(|| std::hint::black_box(thoth::xlsx::build_workbook(&nulls_sheets).unwrap()));
         });
+        // Tall strings at a stated text width (12 chars, `value-`
+        // plus six digits) and tall bools, phase build only.
+        let texts: Vec<String> = (0..n).map(|i| format!("value-{i:06}")).collect();
+        let text_views: Vec<Option<&str>> = texts.iter().map(|s| Some(s.as_str())).collect();
+        let str_cols: Vec<(thoth::contract::Column, thoth::xlsx::ColumnData<'_>)> = vec![(
+            thoth::contract::Column {
+                name: "name".to_string(),
+                kind: thoth::contract::Kind::Str,
+            },
+            thoth::xlsx::ColumnData::Str(&text_views),
+        )];
+        let str_sheets: Vec<thoth::contract::DynamicSheet<'_>> =
+            vec![thoth::contract::DynamicSheet::known(
+                "data".to_string(),
+                &str_cols,
+            )];
+        group.bench_function(format!("emit_tall_strings_{n}"), |b| {
+            b.iter(|| {
+                std::hint::black_box(
+                    thoth::xlsx::sheet_xml_template(&common::Example::dynamic_sheet(
+                        "data", &str_cols,
+                    ))
+                    .unwrap(),
+                )
+            });
+        });
+        group.bench_function(format!("build_tall_strings_{n}"), |b| {
+            b.iter(|| std::hint::black_box(thoth::xlsx::build_workbook(&str_sheets).unwrap()));
+        });
+        let flags: Vec<Option<bool>> = (0..n).map(|i| Some(i % 2 == 0)).collect();
+        let bool_cols: Vec<(thoth::contract::Column, thoth::xlsx::ColumnData<'_>)> = vec![(
+            thoth::contract::Column {
+                name: "ok".to_string(),
+                kind: thoth::contract::Kind::Bool,
+            },
+            thoth::xlsx::ColumnData::Bool(&flags),
+        )];
+        let bool_sheets: Vec<thoth::contract::DynamicSheet<'_>> =
+            vec![thoth::contract::DynamicSheet::known(
+                "data".to_string(),
+                &bool_cols,
+            )];
+        group.bench_function(format!("emit_tall_bools_{n}"), |b| {
+            b.iter(|| {
+                std::hint::black_box(
+                    thoth::xlsx::sheet_xml_template(&common::Example::dynamic_sheet(
+                        "data", &bool_cols,
+                    ))
+                    .unwrap(),
+                )
+            });
+        });
+        group.bench_function(format!("build_tall_bools_{n}"), |b| {
+            b.iter(|| std::hint::black_box(thoth::xlsx::build_workbook(&bool_sheets).unwrap()));
+        });
     }
     let ex1 = common::tall_ints(20_000);
     let ex2 = common::tall_floats(20_000);

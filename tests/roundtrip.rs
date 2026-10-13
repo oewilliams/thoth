@@ -28,7 +28,7 @@ fn examples_round_trip_through_disk() {
         let path = temp_path(example.name);
         let _ = std::fs::remove_file(&path);
         thoth::xlsx::write_workbook_file(&path, &[template]).unwrap();
-        let got = common::read_sheet_values(&path);
+        let got = common::read_sheet_cells(&path);
         assert_eq!(got, example.expected, "{}", example.name);
         // The stored archive embeds exactly the sheet built: the floor
         // oracle, checked per example, not just once.

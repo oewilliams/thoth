@@ -267,4 +267,64 @@ fn sheet_cap_holds() {
         ),
     ];
     check(&tall);
+    // New kinds: bools at their fixed spelling, strings priced from
+    // actual text at the 6x escaped bound (escapable, padded, empty,
+    // blank, and a long repeated text included).
+    let flags: Vec<Option<bool>> = vec![Some(true), Some(false), None, Some(true)];
+    let long_text: String = "&<>\"'".repeat(40);
+    let names: Vec<Option<&str>> = vec![Some("a & <b> \"q\" 'x'"), Some(" pad "), Some(""), None];
+    let owned_long: Vec<Option<&str>> = vec![Some(long_text.as_str()), None, Some("x"), Some("")];
+    let mixed: Vec<(Column, ColumnData<'_>)> = vec![
+        (
+            Column {
+                name: "ok".to_string(),
+                kind: Kind::Bool,
+            },
+            ColumnData::Bool(&flags),
+        ),
+        (
+            Column {
+                name: "name".to_string(),
+                kind: Kind::Str,
+            },
+            ColumnData::Str(&names),
+        ),
+        (
+            Column {
+                name: "long".to_string(),
+                kind: Kind::Str,
+            },
+            ColumnData::Str(&owned_long),
+        ),
+    ];
+    check(&mixed);
+    // Escapable header names price at the escaped bound: a name of
+    // repeated quotes escapes 6x per char, so the cap must cover it
+    // (20 quotes read len 354 over the old cap 353 before the fix).
+    let quoted_name: String = "\"".repeat(100);
+    let empty_q: Vec<i64> = vec![];
+    let escapable: Vec<(Column, ColumnData<'_>)> = vec![(
+        Column {
+            name: quoted_name,
+            kind: Kind::I64,
+        },
+        ColumnData::I64(&empty_q),
+    )];
+    check(&escapable);
+    let many_names: Vec<String> = (0..50).map(|_| "\"".repeat(20)).collect();
+    let many_data: Vec<Vec<i64>> = (0..50).map(|_| vec![]).collect();
+    let many: Vec<(Column, ColumnData<'_>)> = many_names
+        .iter()
+        .zip(many_data.iter())
+        .map(|(name, data)| {
+            (
+                Column {
+                    name: name.clone(),
+                    kind: Kind::I64,
+                },
+                ColumnData::I64(data),
+            )
+        })
+        .collect();
+    check(&many);
 }

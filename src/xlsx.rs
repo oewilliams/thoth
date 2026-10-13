@@ -85,12 +85,28 @@ pub enum XlsxError {
         declared: Kind,
         actual: Kind,
     },
+    /// A string cell passes Excel's 32,767-character cell limit.
+    TextTooLong {
+        column: String,
+        /// 1-based Excel row (header is row 1).
+        row: usize,
+        len: usize,
+    },
+    /// A string cell holds a character Excel cannot hold.
+    InvalidTextChar {
+        column: String,
+        /// 1-based Excel row (header is row 1).
+        row: usize,
+        ch: char,
+    },
 }
 
 fn kind_label(kind: Kind) -> &'static str {
     match kind {
         Kind::I64 => "i64",
         Kind::F64 => "f64",
+        Kind::Str => "str",
+        Kind::Bool => "bool",
     }
 }
 
@@ -167,6 +183,18 @@ impl std::fmt::Display for XlsxError {
                     "column {name:?}: declared kind {} does not match data kind {}",
                     kind_label(*declared),
                     kind_label(*actual)
+                )
+            }
+            XlsxError::TextTooLong { column, row, len } => {
+                write!(
+                    f,
+                    "column {column:?} row {row}: text is {len} characters, excel stops at 32767"
+                )
+            }
+            XlsxError::InvalidTextChar { column, row, ch } => {
+                write!(
+                    f,
+                    "column {column:?} row {row}: character {ch:?} is not a valid excel character"
                 )
             }
         }

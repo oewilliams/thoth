@@ -23,7 +23,7 @@ fn bench(example: &common::Example) {
     thoth::xlsx::write_workbook_file(&path, &[sheet]).unwrap();
     let elapsed = start.elapsed();
     let bytes = std::fs::metadata(&path).unwrap().len();
-    let got = common::read_sheet_values(&path);
+    let got = common::read_sheet_cells(&path);
     assert_eq!(got, example.expected, "{}", example.name);
     let _ = std::fs::remove_file(&path);
     let ms = elapsed.as_secs_f64() * 1000.0;

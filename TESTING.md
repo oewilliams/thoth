@@ -1166,6 +1166,74 @@ No sequential Criterion read is used as close-call evidence.
   cycle. `cargo fmt` applied, `sh check.sh` green (format,
   tests, clippy `-D warnings`, docs).
 
+Post-017 (primitive kinds: strings and bools through the
+contract), this machine (Darwin 27.0.0 arm64, Apple M4,
+`RELEASE_ARM64_T8132`), bench profile (inherits `--release`:
+`overflow-checks = true`, `codegen-units = 1`), rustc 1.93.1,
+commit `1482e88` plus the uncommitted 017 work. Criterion reads
+are direct-binary runs (`fill_write-ec72a5f783e16fae`, single
+filter, `--bench` flag; estimates mtimes confirmed moved).
+Box during the spells: 1-minute load 2.2–3.4. New recipes are
+in the `phase` group beside the existing ones: tall strings
+(one `str` column, 200_000 rows, 12-char texts `value-` plus
+six digits) and tall bools (one `bool` column, alternating
+`Some(true)`/`Some(false)`), built once outside the clock.
+
+| bench (200k) | read A (mean [CI]) | read B (mean [CI]) | archive bytes |
+|---|---|---|---|
+| `phase/build_tall_strings_200000` | 11.678ms [11.665, 11.693] | 11.628ms [11.615, 11.642] | 16381122 |
+| `phase/build_tall_bools_200000` | 3.2514ms [3.2399, 3.2631] | 3.2001ms [3.1929, 3.2074] | 10781120 |
+| `phase/emit_tall_strings_200000` | 9.1769ms [9.1642, 9.1897] | 9.1264ms [9.1182, 9.1347] | — |
+| `phase/emit_tall_bools_200000` | 3.0499ms [3.0448, 3.0553] | 3.0364ms [3.0327, 3.0402] | — |
+
+Both build pairs agree (0.4% strings, 1.6% bools) with tight
+intervals on the final binary; that is ~1406 MB/s (strings)
+and ~3340 MB/s (bools) at archive size. No speed claim beyond
+these reads: the new kinds have no prior baseline. Superseded
+bool reads are named, not dropped: an earlier pair on the
+pre-outline binary read 3.3637 / 3.2724ms and a later pair
+3.2971 / 3.4259ms (3.9% apart) under a busier box; the final
+binary's agreeing pair above supersedes them.
+
+Existing recipes unregressed, two ways. (a) Byte-identity:
+a `/tmp` probe compared `build_workbook` output from a
+`git archive` HEAD extraction and the post-017 tree byte for
+byte (`cmp`) at 200_000 rows on ints, floats, null, mixed,
+and the three-sheet recipe — identical on every recipe
+(10470009 / 10870010 / 10470071 / 17047851 / 21338118).
+(b) Time: an interleaved HEAD/post-017 probe (three rounds
+of 15 builds per recipe, alternating order) reads ints,
+floats, null, and three-sheet at parity (round medians
+overlap on every recipe; null HEAD 4.35–4.72ms vs post-017
+4.24–4.45ms). One layout note from that probe: with
+`#[inline]` on the four new cell spellings, null builds read
+a consistent ~8% over HEAD interleaved; outlining the new
+spellings (same-crate callers still inline where LLVM
+chooses) restored parity, so the new cell functions ship
+without the hint. Final-binary criterion phase builds
+corroborate, cross-session drift included: ints
+3.8936 / 3.8403ms, floats 8.9009 / 8.9206ms, null
+4.5128 / 4.5201ms, three-sheet (20k) 1.2036 / 1.1926ms —
+against Post-014's pairs (3.6122 / 3.6419, 8.9042 / 8.8957,
+4.1103 / 4.0304, 1.1689 / 1.1663) floats sit on the recorded
+means and the rest within the cross-session spread those
+entries already document; the interleaved reads are the
+load-bearing comparison and no recipe regresses on them.
+
+Retained capacity (returned `Vec` capacity / archive length,
+same `/tmp` probe, known shape): strings 17003421 /
+16381122 (1.04x), bools 11403419 / 10781120 (1.06x),
+ints-plus-strings-plus-bools 31403554 / 29047915 (1.08x) —
+the witnessed-length hint reserves string sheets near their
+actual size. Existing recipes unchanged: ints 12203418 /
+10470009 (1.17x), floats 12603419 / 10870010 (1.16x), mixed
+20203485 / 17047851 (1.19x), three-sheet 24805050 /
+21338118 (1.16x), and null 20203485 / 10470071 (1.93x),
+the known blank-heavy retention, reported again not fixed
+here. `sheet_cap_holds` now covers bool and string columns
+(escapable, padded, empty, blank, and long repeated texts)
+and holds.
+
 ## Run-offs (once, not a gate)
 
 Once per serious challenger, same examples, same machine, same

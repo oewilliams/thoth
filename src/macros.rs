@@ -18,6 +18,18 @@ macro_rules! __thoth_static_column {
             data: $data,
         }
     };
+    (str $name:literal => $data:expr) => {
+        $crate::contract::StaticColumn::Str {
+            name: $name,
+            data: $data,
+        }
+    };
+    (bool $name:literal => $data:expr) => {
+        $crate::contract::StaticColumn::Bool {
+            name: $name,
+            data: $data,
+        }
+    };
     ($kind:ident [ $($style:tt)* ] $name:literal => $data:expr) => {
         compile_error!("column styles are reserved syntax and are not implemented yet")
     };
@@ -45,6 +57,24 @@ macro_rules! __thoth_column {
             $crate::xlsx::ColumnData::F64($data),
         )
     };
+    (str $name:literal => $data:expr) => {
+        (
+            $crate::contract::Column {
+                name: $name.to_string(),
+                kind: $crate::contract::Kind::Str,
+            },
+            $crate::xlsx::ColumnData::Str($data),
+        )
+    };
+    (bool $name:literal => $data:expr) => {
+        (
+            $crate::contract::Column {
+                name: $name.to_string(),
+                kind: $crate::contract::Kind::Bool,
+            },
+            $crate::xlsx::ColumnData::Bool($data),
+        )
+    };
     ($kind:ident [ $($style:tt)* ] $name:literal => $data:expr) => {
         compile_error!("column styles are reserved syntax and are not implemented yet")
     };
@@ -69,13 +99,15 @@ macro_rules! columns {
 /// let sheet = thoth::static_sheet!("fixed",
 ///     i64 "t"  => [100, 200, 300],
 ///     f64 "px" => [10.5, 11.0, 12.25],
+///     str "n"  => [Some("a"), None, Some("")],
+///     bool "ok" => [Some(true), Some(false), None],
 /// );
 /// ```
 ///
-/// Kinds other than `i64`/`f64` do not expand yet:
+/// Style brackets stay reserved and fail at compile time:
 ///
 /// ```compile_fail
-/// let _sheet = thoth::static_sheet!("x", str "n" => ["a"]);
+/// let _sheet = thoth::static_sheet!("x", str [bold] "n" => [Some("a")]);
 /// ```
 #[macro_export]
 macro_rules! static_sheet {

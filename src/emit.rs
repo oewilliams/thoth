@@ -156,6 +156,52 @@ pub fn f64_cell(out: &mut String, col_letters: &str, row: &str, v: f64) {
     }
 }
 
+/// One bool cell. `None` -> blank; `Some` spells `t="b"` with
+/// `1`/`0`. `row` is the row digits, shared across the row's cells.
+pub fn bool_cell(out: &mut String, col_letters: &str, row: &str, v: Option<bool>) {
+    match v {
+        None => {
+            cell_open(out, col_letters, row);
+            blank_close(out);
+        }
+        Some(b) => {
+            cell_open(out, col_letters, row);
+            out.push_str("\" t=\"b\"><v>");
+            out.push(if b { '1' } else { '0' });
+            value_close(out);
+        }
+    }
+}
+
+/// Whether inline text needs `xml:space="preserve"` on its `<t>`
+/// element: Excel trims leading/trailing whitespace without it.
+fn needs_preserve(text: &str) -> bool {
+    text.chars().next().is_some_and(|c| c.is_whitespace())
+        || text.chars().last().is_some_and(|c| c.is_whitespace())
+}
+
+/// One inline-string cell. `None` -> blank; `Some("")` is a real
+/// empty string, spelled with empty `<t></t>`, never blank.
+/// `row` is the row digits, shared across the row's cells.
+pub fn str_cell(out: &mut String, col_letters: &str, row: &str, v: Option<&str>) {
+    match v {
+        None => {
+            cell_open(out, col_letters, row);
+            blank_close(out);
+        }
+        Some(text) => {
+            cell_open(out, col_letters, row);
+            out.push_str("\" t=\"inlineStr\"><is><t");
+            if needs_preserve(text) {
+                out.push_str(" xml:space=\"preserve\"");
+            }
+            out.push('>');
+            escape_into(out, text);
+            out.push_str("</t></is></c>");
+        }
+    }
+}
+
 /// `fmt::Write` over a byte buffer, so the `f64` spelling writes
 /// straight into the arena with the same bytes as the `String`
 /// oracle (`write!(out, "{v}")` in [`f64_cell`]).
@@ -276,11 +322,48 @@ pub(crate) fn f64_cell_bytes(out: &mut Vec<u8>, col_letters: &str, row: &[u8], v
     }
 }
 
+/// One bool cell into a byte buffer: byte-identical to
+/// [`bool_cell`].
+pub(crate) fn bool_cell_bytes(out: &mut Vec<u8>, col_letters: &str, row: &[u8], v: Option<bool>) {
+    out.extend_from_slice(b"<c r=\"");
+    out.extend_from_slice(col_letters.as_bytes());
+    out.extend_from_slice(row);
+    match v {
+        None => out.extend_from_slice(b"\"/>"),
+        Some(b) => {
+            out.extend_from_slice(b"\" t=\"b\"><v>");
+            out.push(if b { b'1' } else { b'0' });
+            out.extend_from_slice(b"</v></c>");
+        }
+    }
+}
+
+/// One inline-string cell into a byte buffer: byte-identical to
+/// [`str_cell`].
+pub(crate) fn str_cell_bytes(out: &mut Vec<u8>, col_letters: &str, row: &[u8], v: Option<&str>) {
+    out.extend_from_slice(b"<c r=\"");
+    out.extend_from_slice(col_letters.as_bytes());
+    out.extend_from_slice(row);
+    match v {
+        None => out.extend_from_slice(b"\"/>"),
+        Some(text) => {
+            out.extend_from_slice(b"\" t=\"inlineStr\"><is><t");
+            if needs_preserve(text) {
+                out.extend_from_slice(b" xml:space=\"preserve\"");
+            }
+            out.push(b'>');
+            escape_into_bytes(out, text);
+            out.extend_from_slice(b"</t></is></c>");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        NULL_I64, col_letters, f64_cell, f64_cell_bytes, header_cell, header_cell_bytes, i64_cell,
-        i64_cell_bytes, push_i64, push_i64_bytes,
+        NULL_I64, bool_cell, bool_cell_bytes, col_letters, f64_cell, f64_cell_bytes, header_cell,
+        header_cell_bytes, i64_cell, i64_cell_bytes, push_i64, push_i64_bytes, str_cell,
+        str_cell_bytes,
     };
 
     #[test]
@@ -388,5 +471,50 @@ mod tests {
             header_cell_bytes(&mut bytes, col, name);
             assert_eq!(bytes, oracle.as_bytes(), "header {name}");
         }
+        for v in [Some(true), Some(false), None] {
+            oracle.clear();
+            bytes.clear();
+            bool_cell(&mut oracle, "C", "3", v);
+            bool_cell_bytes(&mut bytes, "C", b"3", v);
+            assert_eq!(bytes, oracle.as_bytes(), "bool {v:?}");
+        }
+        assert_eq!(
+            {
+                let mut s = String::new();
+                bool_cell(&mut s, "C", "3", Some(true));
+                s
+            },
+            "<c r=\"C3\" t=\"b\"><v>1</v></c>"
+        );
+        for v in [
+            Some("plain"),
+            Some("a & <b> \"q\" 'x'"),
+            Some(" lead"),
+            Some("trail "),
+            Some(" both "),
+            Some("\ttab\n"),
+            Some(""),
+            None,
+        ] {
+            oracle.clear();
+            bytes.clear();
+            str_cell(&mut oracle, "D", "4", v);
+            str_cell_bytes(&mut bytes, "D", b"4", v);
+            assert_eq!(bytes, oracle.as_bytes(), "str {v:?}");
+        }
+        // Empty string is a real value, distinct from blank.
+        let mut empty = String::new();
+        str_cell(&mut empty, "D", "4", Some(""));
+        assert_eq!(empty, "<c r=\"D4\" t=\"inlineStr\"><is><t></t></is></c>");
+        let mut blank = String::new();
+        str_cell(&mut blank, "D", "4", None);
+        assert_eq!(blank, "<c r=\"D4\"/>");
+        assert_ne!(empty, blank);
+        let mut preserved = String::new();
+        str_cell(&mut preserved, "D", "4", Some(" x"));
+        assert_eq!(
+            preserved,
+            "<c r=\"D4\" t=\"inlineStr\"><is><t xml:space=\"preserve\"> x</t></is></c>"
+        );
     }
 }

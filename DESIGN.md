@@ -6,7 +6,10 @@ opinionated scope.
 ## Scope
 
 - Output is a file on disk. Nothing else is a deliverable.
-- Cells are primitives only: string, int, float, bool. Dates are not
+- Cells are primitives only: string, int, float, bool — all four
+  kinds ship through the template contract (cycle 017, as shipped:
+  `Kind::I64`/`F64`/`Str`/`Bool`, inline strings, `t="b"` bools,
+  blank for absent values). Dates are not
   handled on our side; they ride through as strings or numbers for Excel
   to parse. Nothing else is permitted for now.
 - Cells may be bold, coloured, or both, from a small fixed palette.

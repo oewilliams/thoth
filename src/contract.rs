@@ -4,8 +4,9 @@
 //! monomorphised; the row loop never branches on impl.
 
 use crate::emit::{
-    col_letters, f64_cell, f64_cell_bytes, header_cell, header_cell_bytes, i64_cell,
-    i64_cell_bytes, push_usize, push_usize_bytes,
+    bool_cell, bool_cell_bytes, col_letters, f64_cell, f64_cell_bytes, header_cell,
+    header_cell_bytes, i64_cell, i64_cell_bytes, push_usize, push_usize_bytes, str_cell,
+    str_cell_bytes,
 };
 use crate::xlsx::{MAX_COLS, MAX_ROWS, XlsxError};
 use crate::zip::{CRC_INIT, crc32_finish, crc32_update};
@@ -15,6 +16,8 @@ use crate::zip::{CRC_INIT, crc32_finish, crc32_update};
 pub enum Kind {
     I64,
     F64,
+    Str,
+    Bool,
 }
 
 /// One declared column: Excel order is declaration order.
@@ -32,6 +35,8 @@ pub const NULL_I64: i64 = i64::MIN;
 pub enum ColumnData<'a> {
     I64(&'a [i64]),
     F64(&'a [f64]),
+    Str(&'a [Option<&'a str>]),
+    Bool(&'a [Option<bool>]),
 }
 
 impl<'a> ColumnData<'a> {
@@ -39,6 +44,8 @@ impl<'a> ColumnData<'a> {
         match self {
             ColumnData::I64(v) => v.len(),
             ColumnData::F64(v) => v.len(),
+            ColumnData::Str(v) => v.len(),
+            ColumnData::Bool(v) => v.len(),
         }
     }
 
@@ -50,6 +57,8 @@ impl<'a> ColumnData<'a> {
         match self {
             ColumnData::I64(_) => Kind::I64,
             ColumnData::F64(_) => Kind::F64,
+            ColumnData::Str(_) => Kind::Str,
+            ColumnData::Bool(_) => Kind::Bool,
         }
     }
 
@@ -59,6 +68,14 @@ impl<'a> ColumnData<'a> {
 
     pub fn from_static_f64<const N: usize>(data: &'a [f64; N]) -> Self {
         ColumnData::F64(data.as_slice())
+    }
+
+    pub fn from_static_str<const N: usize>(data: &'a [Option<&'a str>; N]) -> Self {
+        ColumnData::Str(data.as_slice())
+    }
+
+    pub fn from_static_bool<const N: usize>(data: &'a [Option<bool>; N]) -> Self {
+        ColumnData::Bool(data.as_slice())
     }
 }
 
@@ -216,8 +233,22 @@ impl<'a> SheetTemplate for DynamicSheet<'a> {
 /// One column of a [`StaticSheet`]: fixed `[T; R]` data.
 #[derive(Clone, Copy, Debug)]
 pub enum StaticColumn<const R: usize> {
-    I64 { name: &'static str, data: [i64; R] },
-    F64 { name: &'static str, data: [f64; R] },
+    I64 {
+        name: &'static str,
+        data: [i64; R],
+    },
+    F64 {
+        name: &'static str,
+        data: [f64; R],
+    },
+    Str {
+        name: &'static str,
+        data: [Option<&'static str>; R],
+    },
+    Bool {
+        name: &'static str,
+        data: [Option<bool>; R],
+    },
 }
 
 impl<const R: usize> StaticColumn<R> {
@@ -225,6 +256,8 @@ impl<const R: usize> StaticColumn<R> {
         match self {
             StaticColumn::I64 { name, .. } => name,
             StaticColumn::F64 { name, .. } => name,
+            StaticColumn::Str { name, .. } => name,
+            StaticColumn::Bool { name, .. } => name,
         }
     }
 
@@ -232,6 +265,8 @@ impl<const R: usize> StaticColumn<R> {
         match self {
             StaticColumn::I64 { .. } => Kind::I64,
             StaticColumn::F64 { .. } => Kind::F64,
+            StaticColumn::Str { .. } => Kind::Str,
+            StaticColumn::Bool { .. } => Kind::Bool,
         }
     }
 
@@ -239,6 +274,8 @@ impl<const R: usize> StaticColumn<R> {
         match self {
             StaticColumn::I64 { data, .. } => ColumnData::I64(data.as_slice()),
             StaticColumn::F64 { data, .. } => ColumnData::F64(data.as_slice()),
+            StaticColumn::Str { data, .. } => ColumnData::Str(data.as_slice()),
+            StaticColumn::Bool { data, .. } => ColumnData::Bool(data.as_slice()),
         }
     }
 }
@@ -341,44 +378,167 @@ pub fn validate_template<T: SheetTemplate>(template: &T) -> Result<usize, XlsxEr
             row: r + 2,
         });
     }
+    if let Some(err) = first_text_error(&views) {
+        return Err(err);
+    }
     Ok(nrows)
 }
 
-/// Worst-case sheet bytes (20 per `I64`, 327 per `F64`): the
-/// ceiling proof, never the reservation.
+/// First string refusal in row-major order, or `None`: Excel's
+/// 32,767-char cap and the XML 1.0 valid range, checked per column
+/// contiguously like the float scan in `validate_template`; the
+/// first refusal in row-major order is rebuilt from the per-column
+/// firsts, earliest column winning a tied row. The valid set is
+/// spelled out here where the check lives: tab (0x09), LF (0x0A),
+/// and CR (0x0D) — the whitespace Excel keeps — plus
+/// 0x20..=0xD7FF, 0xE000..=0xFFFD, and 0x10000..=0x10FFFF.
+/// Everything else (other controls below 0x20, 0xFFFE, 0xFFFF)
+/// is refused. `char` in a `&str` is already a valid Unicode
+/// scalar, so surrogates and values past 0x10FFFF cannot occur.
+fn first_text_error(views: &[ColumnView<'_>]) -> Option<XlsxError> {
+    let mut text_first: Option<(usize, usize, XlsxError)> = None;
+    for (c, view) in views.iter().enumerate() {
+        let ColumnData::Str(v) = view.data else {
+            continue;
+        };
+        for (r, cell) in v.iter().enumerate() {
+            let Some(text) = cell else { continue };
+            let mut len: usize = 0;
+            let mut bad: Option<char> = None;
+            for ch in text.chars() {
+                len += 1;
+                if bad.is_none() {
+                    let u: u32 = u32::from(ch);
+                    let valid: bool = u == 0x09
+                        || u == 0x0A
+                        || u == 0x0D
+                        || (0x20..=0xD7FF).contains(&u)
+                        || (0xE000..=0xFFFD).contains(&u)
+                        || (0x10000..=0x10FFFF).contains(&u);
+                    if !valid {
+                        bad = Some(ch);
+                    }
+                }
+            }
+            let err: Option<XlsxError> = if len > 32_767 {
+                Some(XlsxError::TextTooLong {
+                    column: view.name.to_string(),
+                    row: r + 2,
+                    len,
+                })
+            } else {
+                bad.map(|ch| XlsxError::InvalidTextChar {
+                    column: view.name.to_string(),
+                    row: r + 2,
+                    ch,
+                })
+            };
+            if let Some(err) = err {
+                let earlier: bool = text_first.as_ref().is_none_or(|(fr, _, _)| r < *fr);
+                if earlier {
+                    text_first = Some((r, c, err));
+                }
+                break;
+            }
+        }
+    }
+    text_first.map(|(_, _, err)| err)
+}
+
+/// Worst-case sheet bytes (20 per `I64`, 327 per `F64`, the fixed
+/// bool spelling, and per string cell the escaped upper bound of
+/// the actual text at 6x per char plus tags; header names priced
+/// at the same escaped bound): the ceiling proof, never the
+/// reservation.
 pub fn sheet_cap<T: SheetTemplate>(template: &T, nrows: usize, letters: &[String]) -> usize {
     let cell_tags: usize = "<c r=\"".len() + "\"><v>".len() + "</v></c>".len();
-    let mut header: usize = 256 + 12;
-    let mut row: usize = 16 + 7;
+    let mut cap: usize = 256 + 12;
     let views: Vec<ColumnView<'_>> = template.columns_view();
     for (view, letter) in views.iter().zip(letters.iter()) {
-        let widest: usize = match view.data.kind() {
-            Kind::I64 => 20,
-            Kind::F64 => 327,
-        };
-        header += letter.len() + view.name.len() + 64;
-        row += letter.len() + 7 + cell_tags + widest;
+        // Header names escape through the same five-entity table
+        // as string cells, so price the escaped bound (6x per
+        // char, the widest `&quot;`/`&apos;` spelling) plus the
+        // fixed header tags the 64 covers.
+        cap += letter.len() + 6 * view.name.chars().count() + 64;
     }
-    header + nrows * row
+    cap += nrows * (16 + 7);
+    for (view, letter) in views.iter().zip(letters.iter()) {
+        match view.data {
+            ColumnData::Str(v) => {
+                // Per cell: `<c r="` + letter + row digits (<=7) +
+                // `" t="inlineStr">` + `<is><t xml:space="preserve">`
+                // + escaped text (<=6 bytes per char, the widest
+                // five-entity spelling) + `</t></is></c>`; blank is
+                // `<c r="` + letter + digits + `"/>`.
+                for cell in v.iter() {
+                    match cell {
+                        Some(text) => {
+                            cap += letter.len() + 7 + 6 + 16 + 28 + 13 + 6 * text.chars().count();
+                        }
+                        None => {
+                            cap += letter.len() + 7 + 6 + 3;
+                        }
+                    }
+                }
+            }
+            ColumnData::I64(_) | ColumnData::F64(_) | ColumnData::Bool(_) => {
+                let widest: usize = match view.data.kind() {
+                    Kind::I64 => 20,
+                    Kind::F64 => 327,
+                    // Fixed spelling: ` t="b"` (6) plus one digit.
+                    Kind::Bool => 7,
+                    Kind::Str => 0,
+                };
+                cap += nrows * (letter.len() + 7 + cell_tags + widest);
+            }
+        }
+    }
+    cap
 }
 
 /// Arena reservation hint from the declared shape (expected
-/// widths 10 `I64`, 12 `F64`); `None` when a dimension is unknown.
+/// widths 10 `I64`, 12 `F64`; strings priced from witnessed
+/// lengths — text bytes plus tags); `None` when a dimension
+/// is unknown.
 pub fn sheet_hint<T: SheetTemplate>(template: &T, letters: &[String]) -> Option<usize> {
     let nrows: usize = template.shape().rows()?;
     template.shape().columns()?;
-    let mut header: usize = 256 + 12;
-    let mut row: usize = 16 + 7;
     let views: Vec<ColumnView<'_>> = template.columns_view();
+    let mut hint: usize = 256 + 12;
     for (view, letter) in views.iter().zip(letters.iter()) {
-        let expected: usize = match view.data.kind() {
-            Kind::I64 => 10,
-            Kind::F64 => 12,
-        };
-        header += letter.len() + view.name.len() + 64;
-        row += letter.len() + 7 + 20 + expected;
+        hint += letter.len() + view.name.len() + 64;
     }
-    Some(header + nrows * row)
+    hint += nrows * (16 + 7);
+    for (view, letter) in views.iter().zip(letters.iter()) {
+        match view.data {
+            ColumnData::Str(v) => {
+                // Witnessed lengths: actual text bytes plus the
+                // inline-string tags, per cell, so string sheets
+                // reserve near their actual size.
+                for cell in v.iter() {
+                    match cell {
+                        Some(text) => {
+                            hint += letter.len() + 7 + 6 + 16 + 7 + 13 + text.len();
+                        }
+                        None => {
+                            hint += letter.len() + 7 + 6 + 3;
+                        }
+                    }
+                }
+            }
+            ColumnData::I64(_) | ColumnData::F64(_) | ColumnData::Bool(_) => {
+                let expected: usize = match view.data.kind() {
+                    Kind::I64 => 10,
+                    Kind::F64 => 12,
+                    // Fixed bool spelling past the shared tag allowance.
+                    Kind::Bool => 6,
+                    Kind::Str => 0,
+                };
+                hint += nrows * (letter.len() + 7 + 20 + expected);
+            }
+        }
+    }
+    Some(hint)
 }
 
 /// Emit one sheet's XML (the oracle spelling). Assumes
@@ -408,6 +568,8 @@ pub fn emit_sheet<T: SheetTemplate>(template: &T, nrows: usize) -> Result<Vec<u8
             match view.data {
                 ColumnData::I64(v) => i64_cell(&mut out, letter, &row_digits, v[r]),
                 ColumnData::F64(v) => f64_cell(&mut out, letter, &row_digits, v[r]),
+                ColumnData::Str(v) => str_cell(&mut out, letter, &row_digits, v[r]),
+                ColumnData::Bool(v) => bool_cell(&mut out, letter, &row_digits, v[r]),
             }
         }
         out.push_str("</row>");
@@ -451,6 +613,8 @@ pub fn emit_sheet_arena<T: SheetTemplate>(
             match view.data {
                 ColumnData::I64(v) => i64_cell_bytes(out, letter, &row_digits, v[r]),
                 ColumnData::F64(v) => f64_cell_bytes(out, letter, &row_digits, v[r]),
+                ColumnData::Str(v) => str_cell_bytes(out, letter, &row_digits, v[r]),
+                ColumnData::Bool(v) => bool_cell_bytes(out, letter, &row_digits, v[r]),
             }
         }
         out.extend_from_slice(b"</row>");
