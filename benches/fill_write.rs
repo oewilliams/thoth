@@ -64,10 +64,12 @@ fn all_null(n: usize) -> common::Example {
         columns: vec![
             common::ExampleColumn::I64 {
                 name: "t".to_string(),
+                style: thoth::contract::Style::default(),
                 data: vec![thoth::contract::NULL_I64; n],
             },
             common::ExampleColumn::F64 {
                 name: "px".to_string(),
+                style: thoth::contract::Style::default(),
                 data: vec![f64::NAN; n],
             },
         ],
@@ -83,6 +85,7 @@ fn wide_null() -> common::Example {
         columns: (0..30)
             .map(|i| common::ExampleColumn::I64 {
                 name: format!("c{i}"),
+                style: thoth::contract::Style::default(),
                 data: vec![thoth::contract::NULL_I64; 2],
             })
             .collect(),
@@ -242,6 +245,7 @@ fn phase(c: &mut Criterion) {
             thoth::contract::Column {
                 name: "name".to_string(),
                 kind: thoth::contract::Kind::Str,
+                style: thoth::contract::Style::default(),
             },
             thoth::xlsx::ColumnData::Str(&text_views),
         )];
@@ -268,6 +272,7 @@ fn phase(c: &mut Criterion) {
             thoth::contract::Column {
                 name: "ok".to_string(),
                 kind: thoth::contract::Kind::Bool,
+                style: thoth::contract::Style::default(),
             },
             thoth::xlsx::ColumnData::Bool(&flags),
         )];
@@ -288,6 +293,91 @@ fn phase(c: &mut Criterion) {
         });
         group.bench_function(format!("build_tall_bools_{n}"), |b| {
             b.iter(|| std::hint::black_box(thoth::xlsx::build_workbook(&bool_sheets).unwrap()));
+        });
+    }
+    // Styled recipe at 200k (mixed kinds, every column styled)
+    // beside its unstyled twin: the pair prices the `s` bytes.
+    {
+        let n: usize = 200_000;
+        let ints: Vec<i64> = (0..n as i64).collect();
+        let floats: Vec<f64> = (0..n).map(|i| i as f64 + 0.5).collect();
+        let texts: Vec<String> = (0..n).map(|i| format!("value-{i:06}")).collect();
+        let text_views: Vec<Option<&str>> = texts.iter().map(|s| Some(s.as_str())).collect();
+        let flags: Vec<Option<bool>> = (0..n).map(|i| Some(i % 2 == 0)).collect();
+        let styled_cols: Vec<(thoth::contract::Column, thoth::xlsx::ColumnData<'_>)> = vec![
+            (
+                thoth::contract::Column {
+                    name: "t".to_string(),
+                    kind: thoth::contract::Kind::I64,
+                    style: thoth::contract::Style {
+                        bold: true,
+                        colour: None,
+                    },
+                },
+                thoth::xlsx::ColumnData::I64(&ints),
+            ),
+            (
+                thoth::contract::Column {
+                    name: "px".to_string(),
+                    kind: thoth::contract::Kind::F64,
+                    style: thoth::contract::Style {
+                        bold: false,
+                        colour: Some(thoth::contract::Colour::Red),
+                    },
+                },
+                thoth::xlsx::ColumnData::F64(&floats),
+            ),
+            (
+                thoth::contract::Column {
+                    name: "name".to_string(),
+                    kind: thoth::contract::Kind::Str,
+                    style: thoth::contract::Style {
+                        bold: true,
+                        colour: Some(thoth::contract::Colour::Green),
+                    },
+                },
+                thoth::xlsx::ColumnData::Str(&text_views),
+            ),
+            (
+                thoth::contract::Column {
+                    name: "ok".to_string(),
+                    kind: thoth::contract::Kind::Bool,
+                    style: thoth::contract::Style {
+                        bold: false,
+                        colour: Some(thoth::contract::Colour::Amber),
+                    },
+                },
+                thoth::xlsx::ColumnData::Bool(&flags),
+            ),
+        ];
+        let plain_cols: Vec<(thoth::contract::Column, thoth::xlsx::ColumnData<'_>)> = styled_cols
+            .iter()
+            .map(|(col, data)| {
+                (
+                    thoth::contract::Column {
+                        name: col.name.clone(),
+                        kind: col.kind,
+                        style: thoth::contract::Style::default(),
+                    },
+                    *data,
+                )
+            })
+            .collect();
+        let styled_sheets: Vec<thoth::contract::DynamicSheet<'_>> =
+            vec![thoth::contract::DynamicSheet::known(
+                "data".to_string(),
+                &styled_cols,
+            )];
+        let plain_sheets: Vec<thoth::contract::DynamicSheet<'_>> =
+            vec![thoth::contract::DynamicSheet::known(
+                "data".to_string(),
+                &plain_cols,
+            )];
+        group.bench_function("build_styled_mixed_200000", |b| {
+            b.iter(|| std::hint::black_box(thoth::xlsx::build_workbook(&styled_sheets).unwrap()));
+        });
+        group.bench_function("build_mixed_200000", |b| {
+            b.iter(|| std::hint::black_box(thoth::xlsx::build_workbook(&plain_sheets).unwrap()));
         });
     }
     let ex1 = common::tall_ints(20_000);
@@ -323,10 +413,12 @@ fn static_template(c: &mut Criterion) {
         [
             thoth::contract::StaticColumn::I64 {
                 name: "t",
+                style: thoth::contract::Style::default(),
                 data: [100, 200, 300],
             },
             thoth::contract::StaticColumn::F64 {
                 name: "px",
+                style: thoth::contract::Style::default(),
                 data: [10.5, 11.0, 12.25],
             },
         ],
@@ -338,6 +430,7 @@ fn static_template(c: &mut Criterion) {
             thoth::contract::Column {
                 name: "t".to_string(),
                 kind: thoth::contract::Kind::I64,
+                style: thoth::contract::Style::default(),
             },
             thoth::xlsx::ColumnData::I64(&t),
         ),
@@ -345,6 +438,7 @@ fn static_template(c: &mut Criterion) {
             thoth::contract::Column {
                 name: "px".to_string(),
                 kind: thoth::contract::Kind::F64,
+                style: thoth::contract::Style::default(),
             },
             thoth::xlsx::ColumnData::F64(&px),
         ),

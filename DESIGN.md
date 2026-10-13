@@ -12,9 +12,12 @@ opinionated scope.
   blank for absent values). Dates are not
   handled on our side; they ride through as strings or numbers for Excel
   to parse. Nothing else is permitted for now.
-- Cells may be bold, coloured, or both, from a small fixed palette.
-  No conditional formatting (a caller can precompute it before filling
-  the template). Inline strings; no shared-string hash for the MVP.
+- Cells may be bold, coloured, or both, from a small fixed palette
+  (cycle 018, as shipped: style is declared once per column as bold
+  and/or one palette fill colour, applies to data cells only, and
+  the header keeps its bold-only spelling). No conditional
+  formatting (a caller can precompute it before filling the
+  template). Inline strings; no shared-string hash for the MVP.
 - Empty cells, rows, and columns must be possible.
 - A workbook holds multiple named sheets, each with its own columns
   (its own template shape); sealed writes are unchanged.

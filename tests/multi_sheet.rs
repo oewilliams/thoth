@@ -8,7 +8,7 @@ mod common;
 
 use std::path::PathBuf;
 
-use thoth::contract::{Column, DynamicSheet, Kind};
+use thoth::contract::{Column, DynamicSheet, Kind, Style};
 use thoth::xlsx::ColumnData;
 
 fn temp_path(name: &str) -> PathBuf {
@@ -24,6 +24,7 @@ fn three_sheets_round_trip_per_sheet() {
             Column {
                 name: "t".to_string(),
                 kind: Kind::I64,
+                style: Style::default(),
             },
             ColumnData::I64(&t1),
         ),
@@ -31,6 +32,7 @@ fn three_sheets_round_trip_per_sheet() {
             Column {
                 name: "px".to_string(),
                 kind: Kind::F64,
+                style: Style::default(),
             },
             ColumnData::F64(&px1),
         ),
@@ -40,6 +42,7 @@ fn three_sheets_round_trip_per_sheet() {
         Column {
             name: "x".to_string(),
             kind: Kind::I64,
+            style: Style::default(),
         },
         ColumnData::I64(&x2),
     )];
@@ -50,6 +53,7 @@ fn three_sheets_round_trip_per_sheet() {
             Column {
                 name: "t".to_string(),
                 kind: Kind::I64,
+                style: Style::default(),
             },
             ColumnData::I64(&empty_i),
         ),
@@ -57,6 +61,7 @@ fn three_sheets_round_trip_per_sheet() {
             Column {
                 name: "px".to_string(),
                 kind: Kind::F64,
+                style: Style::default(),
             },
             ColumnData::F64(&empty_f),
         ),
@@ -64,6 +69,7 @@ fn three_sheets_round_trip_per_sheet() {
             Column {
                 name: "y".to_string(),
                 kind: Kind::I64,
+                style: Style::default(),
             },
             ColumnData::I64(&empty_i),
         ),

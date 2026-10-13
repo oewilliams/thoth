@@ -29,11 +29,14 @@ Current examples (match what the code supports today):
   column. Never round-trips.
 - `infinite` (negative): infinities stop the run with position. Never
   round-trips.
+- `styled`: bold, colour, and bold-colour columns across mixed kinds,
+  styles carried in the column declarations; values round-trip
+  unchanged and the `s` indices are asserted on the bytes in
+  `tests/styles.rs`.
 
 Reserved, added only when the code supports them: inline strings
-(including `&`, `<`, `>` escaping), bools, bold/colour palette combos,
-empty rows and columns, date-as-string-or-number, and one fixed-size
-template example.
+(including `&`, `<`, `>` escaping), bools, empty rows and columns,
+date-as-string-or-number, and one fixed-size template example.
 
 ## Tests (`cargo test`)
 
@@ -1233,6 +1236,91 @@ the known blank-heavy retention, reported again not fixed
 here. `sheet_cap_holds` now covers bool and string columns
 (escapable, padded, empty, blank, and long repeated texts)
 and holds.
+
+Post-018 (styles: bold and fill colour through the contract), this
+machine (Darwin 27.0.0 arm64, Apple M4, `RELEASE_ARM64_T8132`),
+bench profile (inherits `--release`: `overflow-checks = true`,
+`codegen-units = 1`), rustc 1.93.1, commit `3c1c266` plus the
+uncommitted 018 work. Criterion reads are direct-binary runs
+(`fill_write-ec72a5f783e16fae`, single filter, `--bench` flag;
+estimates mtimes confirmed moved before quoting). The interleaved
+probe is a `/tmp` scratch crate against `thoth` by path (HEAD from
+a `git archive` extraction in `/tmp/thoth-head-018`), alternating
+HEAD and post-018 binaries, three rounds of 15 builds per recipe,
+medians of each round quoted as ranges, byte-identity asserted
+before any timing.
+
+(a) Byte-identity for unstyled sheets held. A `/tmp` probe compared
+every archive part from HEAD and post-018 binaries at 200_000 rows
+on ints, floats, null, mixed, strings/bools, and the three-sheet
+recipe: every part is byte-identical except `xl/styles.xml`, which
+grows 708 -> 2235 bytes (new pin 2235/`0x76B2525A`, recaptured in
+`static_parts_are_pinned`), so every archive grows by exactly the
+1527 styles bytes (ints 10470009 -> 10471536, floats 10870010 ->
+10871537, null 10470071 -> 10471598, mixed 17047851 -> 17049378,
+strings/bools 22870074 -> 22871601, three-sheet 21338118 ->
+21339645). Sheet bytes, headers included, do not change. Styled
+spellings are pinned the other way: the emitter sweep in
+`src/emit.rs` covers every kind valued and blank at bold-only and
+every colour plain and bold (indices 1..=13) byte-for-byte between
+the oracle and arena spellings, `tests/styles.rs` asserts the `s`
+indices per cell (valued and blank), the palette fills in order,
+and the 14-entry `cellXfs` table on the stored parts, and the
+styled example's values round-trip unchanged.
+
+(b) Retained capacity (returned `Vec` capacity / archive length,
+same probe, known shape), styled recipes included per R4:
+ints 12204945 / 10471536 (1.17x), floats 12604946 / 10871537
+(1.16x), mixed 20205012 / 17049378 (1.19x), three-sheet 24806577 /
+21339645 (1.16x), strings/bools 23805015 / 22871601 (1.04x) — all
+unchanged ratios from HEAD, each capacity exactly 1527 over its
+HEAD figure for the larger styles part — and null 20205012 /
+10471598 (1.93x), the known blank-heavy retention, again not
+fixed here. The styled bench recipe below: styled 44205148 /
+40427284 (1.09x) against its unstyled twin 39405148 / 35627284
+(1.11x); the capacity difference is exactly the 4,800,000 `s`
+bytes, so the hint prices the exact index spelling per cell.
+`sheet_cap_holds` now covers styled columns of every kind at the
+widest index and holds.
+
+(c) Existing recipes on the final binary, criterion `phase`
+build pairs (two agreeing reads each): ints 3.9613 / 3.9117ms,
+floats 9.0332 / 9.0930ms, null 4.5808 / 4.5911ms, against the
+Post-017 final-binary pairs (ints 3.8936 / 3.8403ms, floats
+8.9009 / 8.9206ms) — ints and floats within 2% of the recorded
+means, no regression claimed or read beyond that. The 017
+null-timing discrepancy stays unquoted: no cross-binary null
+delta is recorded here, and the null pair above is a
+final-binary read only. The interleaved probe corroborates on
+the recipes it can price without that question: ints post-018
+3.686–3.900ms against HEAD 3.682–3.922ms (parity), floats
+8.938–8.992ms against 9.069–9.133ms (below HEAD, not claimed),
+mixed 10.924–11.092ms against 11.502–11.747ms (below, not
+claimed), strings/bools 13.312–13.414ms against 12.954–13.233ms,
+three-sheet 12.741–13.085ms against 12.876–13.204ms (parity).
+No speed claim beyond these reads. One rejected spelling is
+named, not dropped: a first styled spelling that appended the
+`"` close, the fragment, and the suffix on every cell read
+floats ~5% and null ~20% over HEAD interleaved; the shipped
+spelling keeps each plain body verbatim beside an outlined
+styled body, and the reads above are that spelling's.
+
+(d) Styled recipe, priced against its twin. New `phase` benches
+`build_styled_mixed_200000` and `build_mixed_200000` in
+`benches/fill_write.rs` (mixed kinds at 200_000 rows, every
+column styled against the same data plain). Criterion on the
+final binary: styled 25.576ms and 25.826ms, twin 23.017ms and
+23.186ms — the styled build costs ~2.6ms (~11%) over its twin.
+The byte difference is exactly the `s` spellings: styled
+40427284 archive bytes against twin 35627284, a difference of
+4,800,000 = 800,000 cells x 6 bytes (` s="1"`/` s="2"`/` s="5"`/
+` s="6"`, all single-digit indices in this recipe), so the cost
+stated is the cost of the `s` bytes themselves at ~1540–1570
+MB/s on both sides. `sh check.sh` green (format, 35 unit tests
+plus round-trip, multi-sheet, sealed, template, primitives, and
+the 4 new styles tests, clippy `-D warnings`, docs, and the
+macro compile-fail doctests for an unknown colour, two colours,
+and a repeated `bold`).
 
 ## Run-offs (once, not a gate)
 

@@ -220,7 +220,7 @@ mod tests {
         workbook_cap, workbook_rels_cap, workbook_rels_xml, workbook_xml,
     };
     use crate::contract::DynamicSheet;
-    use crate::contract::{Column, Kind};
+    use crate::contract::{Column, Kind, Style};
     use crate::static_parts::{
         CONTENT_TYPES_HEAD, CONTENT_TYPES_SHEET_CLOSE, CONTENT_TYPES_SHEET_OPEN,
         CONTENT_TYPES_TAIL, RELS, STYLES, WORKBOOK_HEAD, WORKBOOK_RELS_HEAD,
@@ -239,7 +239,7 @@ mod tests {
     fn static_parts_are_pinned() {
         let whole: [(&str, &str, usize, u32); 2] = [
             ("_rels/.rels", RELS, 296, 0x82C7_5906),
-            ("xl/styles.xml", STYLES, 708, 0x24A3_B074),
+            ("xl/styles.xml", STYLES, 2235, 0x76B2_525A),
         ];
         for (name, part, len, crc) in whole {
             assert_eq!(part.len(), len, "{name}");
@@ -360,6 +360,7 @@ mod tests {
             Column {
                 name: "t".to_string(),
                 kind: Kind::I64,
+                style: Style::default(),
             },
             ColumnData::I64(&t),
         )];
@@ -374,6 +375,7 @@ mod tests {
             Column {
                 name: "t".to_string(),
                 kind: Kind::I64,
+                style: Style::default(),
             },
             ColumnData::I64(&t),
         )];
@@ -390,6 +392,7 @@ mod tests {
             Column {
                 name: "t".to_string(),
                 kind: Kind::I64,
+                style: Style::default(),
             },
             ColumnData::I64(&t),
         )];

@@ -1,6 +1,11 @@
 //! Typed cell emitters: one monomorphic loop per kind, no per-cell
 //! branch on type. Nulls (`i64::MIN`, NaN) emit a blank `<c/>` —
 //! absence, not a number.
+//!
+//! STYLE rule 1 tripwire: this file passes 700 lines in cycle 018
+//! because each kind keeps a plain body (verbatim, so the plain
+//! path pays nothing measurable) beside an outlined styled body;
+//! the duplication is the measured price of that split.
 
 use std::fmt::Write as _;
 
@@ -104,6 +109,8 @@ fn push_magnitude(out: &mut String, mag: u64) {
 }
 
 /// Shared cell-tag skeleton (open, blank-close, value-wrap); values and null tests stay per-kind.
+/// `style` is the column's pre-spelled fragment (` s="5"`, empty
+/// for plain), placed after the `r` attribute and before any `t`.
 #[inline]
 fn cell_open(out: &mut String, col_letters: &str, row: &str) {
     out.push_str("<c r=\"");
@@ -112,13 +119,29 @@ fn cell_open(out: &mut String, col_letters: &str, row: &str) {
 }
 
 #[inline]
+fn style_close(out: &mut String, style: &str) {
+    out.push('"');
+    out.push_str(style);
+}
+
+#[inline]
 fn blank_close(out: &mut String) {
     out.push_str("\"/>");
 }
 
 #[inline]
+fn blank_close_styled(out: &mut String) {
+    out.push_str("/>");
+}
+
+#[inline]
 fn value_open(out: &mut String) {
     out.push_str("\"><v>");
+}
+
+#[inline]
+fn value_open_styled(out: &mut String) {
+    out.push_str("><v>");
 }
 
 #[inline]
@@ -130,7 +153,11 @@ fn value_close(out: &mut String) {
 /// `row` is the row digits, formatted once and shared across the
 /// row's cells.
 #[inline]
-pub fn i64_cell(out: &mut String, col_letters: &str, row: &str, v: i64) {
+pub fn i64_cell(out: &mut String, col_letters: &str, row: &str, style: &str, v: i64) {
+    if !style.is_empty() {
+        i64_cell_styled(out, col_letters, row, style, v);
+        return;
+    }
     if v == NULL_I64 {
         cell_open(out, col_letters, row);
         blank_close(out);
@@ -142,11 +169,27 @@ pub fn i64_cell(out: &mut String, col_letters: &str, row: &str, v: i64) {
     }
 }
 
+fn i64_cell_styled(out: &mut String, col_letters: &str, row: &str, style: &str, v: i64) {
+    cell_open(out, col_letters, row);
+    style_close(out, style);
+    if v == NULL_I64 {
+        blank_close_styled(out);
+    } else {
+        value_open_styled(out);
+        push_i64(out, v);
+        value_close(out);
+    }
+}
+
 /// One numeric f64 cell. NaN -> blank; infinite -> caller refuses.
 /// `row` is the row digits, formatted once and shared across the
 /// row's cells.
 #[inline]
-pub fn f64_cell(out: &mut String, col_letters: &str, row: &str, v: f64) {
+pub fn f64_cell(out: &mut String, col_letters: &str, row: &str, style: &str, v: f64) {
+    if !style.is_empty() {
+        f64_cell_styled(out, col_letters, row, style, v);
+        return;
+    }
     if v.is_nan() {
         cell_open(out, col_letters, row);
         blank_close(out);
@@ -161,9 +204,27 @@ pub fn f64_cell(out: &mut String, col_letters: &str, row: &str, v: f64) {
     }
 }
 
+fn f64_cell_styled(out: &mut String, col_letters: &str, row: &str, style: &str, v: f64) {
+    cell_open(out, col_letters, row);
+    style_close(out, style);
+    if v.is_nan() {
+        blank_close_styled(out);
+    } else {
+        value_open_styled(out);
+        if write!(out, "{v}").is_err() {
+            debug_assert!(false);
+        }
+        value_close(out);
+    }
+}
+
 /// One bool cell. `None` -> blank; `Some` spells `t="b"` with
 /// `1`/`0`. `row` is the row digits, shared across the row's cells.
-pub fn bool_cell(out: &mut String, col_letters: &str, row: &str, v: Option<bool>) {
+pub fn bool_cell(out: &mut String, col_letters: &str, row: &str, style: &str, v: Option<bool>) {
+    if !style.is_empty() {
+        bool_cell_styled(out, col_letters, row, style, v);
+        return;
+    }
     match v {
         None => {
             cell_open(out, col_letters, row);
@@ -172,6 +233,23 @@ pub fn bool_cell(out: &mut String, col_letters: &str, row: &str, v: Option<bool>
         Some(b) => {
             cell_open(out, col_letters, row);
             out.push_str("\" t=\"b\"><v>");
+            out.push(if b { '1' } else { '0' });
+            value_close(out);
+        }
+    }
+}
+
+fn bool_cell_styled(out: &mut String, col_letters: &str, row: &str, style: &str, v: Option<bool>) {
+    match v {
+        None => {
+            cell_open(out, col_letters, row);
+            style_close(out, style);
+            blank_close_styled(out);
+        }
+        Some(b) => {
+            cell_open(out, col_letters, row);
+            style_close(out, style);
+            out.push_str(" t=\"b\"><v>");
             out.push(if b { '1' } else { '0' });
             value_close(out);
         }
@@ -188,7 +266,11 @@ fn needs_preserve(text: &str) -> bool {
 /// One inline-string cell. `None` -> blank; `Some("")` is a real
 /// empty string, spelled with empty `<t></t>`, never blank.
 /// `row` is the row digits, shared across the row's cells.
-pub fn str_cell(out: &mut String, col_letters: &str, row: &str, v: Option<&str>) {
+pub fn str_cell(out: &mut String, col_letters: &str, row: &str, style: &str, v: Option<&str>) {
+    if !style.is_empty() {
+        str_cell_styled(out, col_letters, row, style, v);
+        return;
+    }
     match v {
         None => {
             cell_open(out, col_letters, row);
@@ -197,6 +279,27 @@ pub fn str_cell(out: &mut String, col_letters: &str, row: &str, v: Option<&str>)
         Some(text) => {
             cell_open(out, col_letters, row);
             out.push_str("\" t=\"inlineStr\"><is><t");
+            if needs_preserve(text) {
+                out.push_str(" xml:space=\"preserve\"");
+            }
+            out.push('>');
+            escape_into(out, text);
+            out.push_str("</t></is></c>");
+        }
+    }
+}
+
+fn str_cell_styled(out: &mut String, col_letters: &str, row: &str, style: &str, v: Option<&str>) {
+    match v {
+        None => {
+            cell_open(out, col_letters, row);
+            style_close(out, style);
+            blank_close_styled(out);
+        }
+        Some(text) => {
+            cell_open(out, col_letters, row);
+            style_close(out, style);
+            out.push_str(" t=\"inlineStr\"><is><t");
             if needs_preserve(text) {
                 out.push_str(" xml:space=\"preserve\"");
             }
@@ -278,7 +381,17 @@ pub(crate) fn header_cell_bytes(out: &mut Vec<u8>, col: usize, name: &str) {
 /// (runtime-length appends lose to constant-length ones), so the
 /// open stays two constant appends plus the letters.
 #[inline]
-pub(crate) fn i64_cell_bytes(out: &mut Vec<u8>, col_letters: &str, row: &[u8], v: i64) {
+pub(crate) fn i64_cell_bytes(
+    out: &mut Vec<u8>,
+    col_letters: &str,
+    row: &[u8],
+    style: &str,
+    v: i64,
+) {
+    if !style.is_empty() {
+        i64_cell_bytes_styled(out, col_letters, row, style, v);
+        return;
+    }
     out.extend_from_slice(b"<c r=\"");
     out.extend_from_slice(col_letters.as_bytes());
     out.extend_from_slice(row);
@@ -291,10 +404,35 @@ pub(crate) fn i64_cell_bytes(out: &mut Vec<u8>, col_letters: &str, row: &[u8], v
     }
 }
 
+fn i64_cell_bytes_styled(out: &mut Vec<u8>, col_letters: &str, row: &[u8], style: &str, v: i64) {
+    out.extend_from_slice(b"<c r=\"");
+    out.extend_from_slice(col_letters.as_bytes());
+    out.extend_from_slice(row);
+    out.extend_from_slice(b"\"");
+    out.extend_from_slice(style.as_bytes());
+    if v == NULL_I64 {
+        out.extend_from_slice(b"/>");
+    } else {
+        out.extend_from_slice(b"><v>");
+        push_i64_bytes(out, v);
+        out.extend_from_slice(b"</v></c>");
+    }
+}
+
 /// One numeric f64 cell into a byte buffer: byte-identical to
 /// [`f64_cell`] (NaN blank, the `Display` spelling write-through).
 #[inline]
-pub(crate) fn f64_cell_bytes(out: &mut Vec<u8>, col_letters: &str, row: &[u8], v: f64) {
+pub(crate) fn f64_cell_bytes(
+    out: &mut Vec<u8>,
+    col_letters: &str,
+    row: &[u8],
+    style: &str,
+    v: f64,
+) {
+    if !style.is_empty() {
+        f64_cell_bytes_styled(out, col_letters, row, style, v);
+        return;
+    }
     out.extend_from_slice(b"<c r=\"");
     out.extend_from_slice(col_letters.as_bytes());
     out.extend_from_slice(row);
@@ -310,9 +448,36 @@ pub(crate) fn f64_cell_bytes(out: &mut Vec<u8>, col_letters: &str, row: &[u8], v
     }
 }
 
+fn f64_cell_bytes_styled(out: &mut Vec<u8>, col_letters: &str, row: &[u8], style: &str, v: f64) {
+    out.extend_from_slice(b"<c r=\"");
+    out.extend_from_slice(col_letters.as_bytes());
+    out.extend_from_slice(row);
+    out.extend_from_slice(b"\"");
+    out.extend_from_slice(style.as_bytes());
+    if v.is_nan() {
+        out.extend_from_slice(b"/>");
+    } else {
+        out.extend_from_slice(b"><v>");
+        if write!(VecFmt(out), "{v}").is_err() {
+            debug_assert!(false);
+        }
+        out.extend_from_slice(b"</v></c>");
+    }
+}
+
 /// One bool cell into a byte buffer: byte-identical to
 /// [`bool_cell`].
-pub(crate) fn bool_cell_bytes(out: &mut Vec<u8>, col_letters: &str, row: &[u8], v: Option<bool>) {
+pub(crate) fn bool_cell_bytes(
+    out: &mut Vec<u8>,
+    col_letters: &str,
+    row: &[u8],
+    style: &str,
+    v: Option<bool>,
+) {
+    if !style.is_empty() {
+        bool_cell_bytes_styled(out, col_letters, row, style, v);
+        return;
+    }
     out.extend_from_slice(b"<c r=\"");
     out.extend_from_slice(col_letters.as_bytes());
     out.extend_from_slice(row);
@@ -326,9 +491,41 @@ pub(crate) fn bool_cell_bytes(out: &mut Vec<u8>, col_letters: &str, row: &[u8], 
     }
 }
 
+fn bool_cell_bytes_styled(
+    out: &mut Vec<u8>,
+    col_letters: &str,
+    row: &[u8],
+    style: &str,
+    v: Option<bool>,
+) {
+    out.extend_from_slice(b"<c r=\"");
+    out.extend_from_slice(col_letters.as_bytes());
+    out.extend_from_slice(row);
+    out.extend_from_slice(b"\"");
+    out.extend_from_slice(style.as_bytes());
+    match v {
+        None => out.extend_from_slice(b"/>"),
+        Some(b) => {
+            out.extend_from_slice(b" t=\"b\"><v>");
+            out.push(if b { b'1' } else { b'0' });
+            out.extend_from_slice(b"</v></c>");
+        }
+    }
+}
+
 /// One inline-string cell into a byte buffer: byte-identical to
 /// [`str_cell`].
-pub(crate) fn str_cell_bytes(out: &mut Vec<u8>, col_letters: &str, row: &[u8], v: Option<&str>) {
+pub(crate) fn str_cell_bytes(
+    out: &mut Vec<u8>,
+    col_letters: &str,
+    row: &[u8],
+    style: &str,
+    v: Option<&str>,
+) {
+    if !style.is_empty() {
+        str_cell_bytes_styled(out, col_letters, row, style, v);
+        return;
+    }
     out.extend_from_slice(b"<c r=\"");
     out.extend_from_slice(col_letters.as_bytes());
     out.extend_from_slice(row);
@@ -336,6 +533,32 @@ pub(crate) fn str_cell_bytes(out: &mut Vec<u8>, col_letters: &str, row: &[u8], v
         None => out.extend_from_slice(b"\"/>"),
         Some(text) => {
             out.extend_from_slice(b"\" t=\"inlineStr\"><is><t");
+            if needs_preserve(text) {
+                out.extend_from_slice(b" xml:space=\"preserve\"");
+            }
+            out.push(b'>');
+            escape_into_bytes(out, text);
+            out.extend_from_slice(b"</t></is></c>");
+        }
+    }
+}
+
+fn str_cell_bytes_styled(
+    out: &mut Vec<u8>,
+    col_letters: &str,
+    row: &[u8],
+    style: &str,
+    v: Option<&str>,
+) {
+    out.extend_from_slice(b"<c r=\"");
+    out.extend_from_slice(col_letters.as_bytes());
+    out.extend_from_slice(row);
+    out.extend_from_slice(b"\"");
+    out.extend_from_slice(style.as_bytes());
+    match v {
+        None => out.extend_from_slice(b"/>"),
+        Some(text) => {
+            out.extend_from_slice(b" t=\"inlineStr\"><is><t");
             if needs_preserve(text) {
                 out.extend_from_slice(b" xml:space=\"preserve\"");
             }
@@ -365,11 +588,39 @@ mod tests {
     #[test]
     fn null_is_blank() {
         let mut s = String::new();
-        i64_cell(&mut s, "A", "2", NULL_I64);
+        i64_cell(&mut s, "A", "2", "", NULL_I64);
         assert_eq!(s, "<c r=\"A2\"/>");
         s.clear();
-        f64_cell(&mut s, "B", "2", f64::NAN);
+        f64_cell(&mut s, "B", "2", "", f64::NAN);
         assert_eq!(s, "<c r=\"B2\"/>");
+    }
+
+    #[test]
+    fn styled_spellings_place_s_after_r_before_t() {
+        let mut s = String::new();
+        i64_cell(&mut s, "A", "2", " s=\"5\"", 7);
+        assert_eq!(s, "<c r=\"A2\" s=\"5\"><v>7</v></c>");
+        s.clear();
+        i64_cell(&mut s, "A", "2", " s=\"5\"", NULL_I64);
+        assert_eq!(s, "<c r=\"A2\" s=\"5\"/>");
+        s.clear();
+        f64_cell(&mut s, "B", "2", " s=\"5\"", f64::NAN);
+        assert_eq!(s, "<c r=\"B2\" s=\"5\"/>");
+        s.clear();
+        bool_cell(&mut s, "C", "3", " s=\"5\"", Some(true));
+        assert_eq!(s, "<c r=\"C3\" s=\"5\" t=\"b\"><v>1</v></c>");
+        s.clear();
+        bool_cell(&mut s, "C", "3", " s=\"5\"", None);
+        assert_eq!(s, "<c r=\"C3\" s=\"5\"/>");
+        s.clear();
+        str_cell(&mut s, "D", "4", " s=\"5\"", Some("x"));
+        assert_eq!(
+            s,
+            "<c r=\"D4\" s=\"5\" t=\"inlineStr\"><is><t>x</t></is></c>"
+        );
+        s.clear();
+        str_cell(&mut s, "D", "4", " s=\"5\"", None);
+        assert_eq!(s, "<c r=\"D4\" s=\"5\"/>");
     }
 
     /// Direct integer spelling matches `to_string` exactly: a full
@@ -410,8 +661,8 @@ mod tests {
         for v in [-100_000i64, -1, 0, 1, 99, 100, 100_000, i64::MAX, NULL_I64] {
             oracle.clear();
             bytes.clear();
-            i64_cell(&mut oracle, "A", "2", v);
-            i64_cell_bytes(&mut bytes, "A", b"2", v);
+            i64_cell(&mut oracle, "A", "2", "", v);
+            i64_cell_bytes(&mut bytes, "A", b"2", "", v);
             assert_eq!(bytes, oracle.as_bytes(), "i64 {v}");
             oracle.clear();
             bytes.clear();
@@ -448,8 +699,8 @@ mod tests {
         for v in floats {
             oracle.clear();
             bytes.clear();
-            f64_cell(&mut oracle, "B", "7", v);
-            f64_cell_bytes(&mut bytes, "B", b"7", v);
+            f64_cell(&mut oracle, "B", "7", "", v);
+            f64_cell_bytes(&mut bytes, "B", b"7", "", v);
             assert_eq!(bytes, oracle.as_bytes(), "f64 {v}");
         }
         for (col, name) in [(0usize, "t"), (27, "a & <b> \"q\"")] {
@@ -462,14 +713,14 @@ mod tests {
         for v in [Some(true), Some(false), None] {
             oracle.clear();
             bytes.clear();
-            bool_cell(&mut oracle, "C", "3", v);
-            bool_cell_bytes(&mut bytes, "C", b"3", v);
+            bool_cell(&mut oracle, "C", "3", "", v);
+            bool_cell_bytes(&mut bytes, "C", b"3", "", v);
             assert_eq!(bytes, oracle.as_bytes(), "bool {v:?}");
         }
         assert_eq!(
             {
                 let mut s = String::new();
-                bool_cell(&mut s, "C", "3", Some(true));
+                bool_cell(&mut s, "C", "3", "", Some(true));
                 s
             },
             "<c r=\"C3\" t=\"b\"><v>1</v></c>"
@@ -486,20 +737,67 @@ mod tests {
         ] {
             oracle.clear();
             bytes.clear();
-            str_cell(&mut oracle, "D", "4", v);
-            str_cell_bytes(&mut bytes, "D", b"4", v);
+            str_cell(&mut oracle, "D", "4", "", v);
+            str_cell_bytes(&mut bytes, "D", b"4", "", v);
             assert_eq!(bytes, oracle.as_bytes(), "str {v:?}");
+        }
+        // Styled sweep: bold-only and every colour plain and bold,
+        // every kind valued and blank, byte sink against oracle.
+        let styled: [&str; 13] = [
+            " s=\"1\"",
+            " s=\"2\"",
+            " s=\"3\"",
+            " s=\"4\"",
+            " s=\"5\"",
+            " s=\"6\"",
+            " s=\"7\"",
+            " s=\"8\"",
+            " s=\"9\"",
+            " s=\"10\"",
+            " s=\"11\"",
+            " s=\"12\"",
+            " s=\"13\"",
+        ];
+        for style in styled {
+            for v in [7i64, NULL_I64] {
+                oracle.clear();
+                bytes.clear();
+                i64_cell(&mut oracle, "A", "2", style, v);
+                i64_cell_bytes(&mut bytes, "A", b"2", style, v);
+                assert_eq!(bytes, oracle.as_bytes(), "styled i64 {style} {v}");
+            }
+            for v in [1.5f64, f64::NAN] {
+                oracle.clear();
+                bytes.clear();
+                f64_cell(&mut oracle, "B", "7", style, v);
+                f64_cell_bytes(&mut bytes, "B", b"7", style, v);
+                assert_eq!(bytes, oracle.as_bytes(), "styled f64 {style} {v}");
+            }
+            for v in [Some(true), None] {
+                oracle.clear();
+                bytes.clear();
+                bool_cell(&mut oracle, "C", "3", style, v);
+                bool_cell_bytes(&mut bytes, "C", b"3", style, v);
+                assert_eq!(bytes, oracle.as_bytes(), "styled bool {style} {v:?}");
+            }
+            for v in [Some("x"), None] {
+                oracle.clear();
+                bytes.clear();
+                str_cell(&mut oracle, "D", "4", style, v);
+                str_cell_bytes(&mut bytes, "D", b"4", style, v);
+                assert_eq!(bytes, oracle.as_bytes(), "styled str {style} {v:?}");
+            }
         }
         // Empty string is a real value, distinct from blank.
         let mut empty = String::new();
-        str_cell(&mut empty, "D", "4", Some(""));
+        str_cell(&mut empty, "D", "4", "", Some(""));
         assert_eq!(empty, "<c r=\"D4\" t=\"inlineStr\"><is><t></t></is></c>");
         let mut blank = String::new();
-        str_cell(&mut blank, "D", "4", None);
+        str_cell(&mut blank, "D", "4", "", None);
         assert_eq!(blank, "<c r=\"D4\"/>");
         assert_ne!(empty, blank);
         let mut preserved = String::new();
-        str_cell(&mut preserved, "D", "4", Some(" x"));
+        str_cell(&mut preserved, "D", "4", "", Some(" x"));
         assert_eq!(
             preserved,
             "<c r=\"D4\" t=\"inlineStr\"><is><t xml:space=\"preserve\"> x</t></is></c>"

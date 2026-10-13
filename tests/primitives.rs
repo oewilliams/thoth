@@ -6,7 +6,7 @@ mod common;
 
 use std::path::PathBuf;
 
-use thoth::contract::{Column, DynamicSheet, Kind, StaticColumn, StaticSheet};
+use thoth::contract::{Column, DynamicSheet, Kind, StaticColumn, StaticSheet, Style};
 use thoth::xlsx::ColumnData;
 
 fn temp_path(name: &str) -> PathBuf {
@@ -18,6 +18,7 @@ fn str_cols<'a>(data: &'a [Option<&'a str>]) -> Vec<(Column, ColumnData<'a>)> {
         Column {
             name: "name".to_string(),
             kind: Kind::Str,
+            style: Style::default(),
         },
         ColumnData::Str(data),
     )]
@@ -80,6 +81,7 @@ fn new_kind_mismatch_is_refused() {
         Column {
             name: "ok".to_string(),
             kind: Kind::Str,
+            style: Style::default(),
         },
         ColumnData::Bool(&flags),
     )];
@@ -103,6 +105,7 @@ fn static_str_bool_bytes_match_dynamic() {
             Column {
                 name: "t".to_string(),
                 kind: Kind::I64,
+                style: Style::default(),
             },
             ColumnData::I64(&t),
         ),
@@ -110,6 +113,7 @@ fn static_str_bool_bytes_match_dynamic() {
             Column {
                 name: "name".to_string(),
                 kind: Kind::Str,
+                style: Style::default(),
             },
             ColumnData::Str(&names),
         ),
@@ -117,6 +121,7 @@ fn static_str_bool_bytes_match_dynamic() {
             Column {
                 name: "ok".to_string(),
                 kind: Kind::Bool,
+                style: Style::default(),
             },
             ColumnData::Bool(&flags),
         ),
@@ -127,14 +132,17 @@ fn static_str_bool_bytes_match_dynamic() {
         [
             StaticColumn::I64 {
                 name: "t",
+                style: Style::default(),
                 data: [1, 2, 3],
             },
             StaticColumn::Str {
                 name: "name",
+                style: Style::default(),
                 data: [Some("a & b"), Some(""), None],
             },
             StaticColumn::Bool {
                 name: "ok",
+                style: Style::default(),
                 data: [Some(true), None, Some(false)],
             },
         ],
@@ -171,10 +179,12 @@ fn macro_str_bool_expansions_match_handwritten() {
         [
             StaticColumn::Str {
                 name: "name",
+                style: Style::default(),
                 data: [Some("x"), None],
             },
             StaticColumn::Bool {
                 name: "ok",
+                style: Style::default(),
                 data: [Some(true), Some(false)],
             },
         ],

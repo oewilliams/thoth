@@ -2,6 +2,11 @@
 //! data, and its shape knowledge once; the drivers below consume
 //! that declaration without re-deriving shape. Impls are
 //! monomorphised; the row loop never branches on impl.
+//!
+//! STYLE rule 1 tripwire: this file passes 700 lines in cycle 018
+//! because `Colour`/`Style` are declared beside `Kind`/`Column` —
+//! style is gathered once per sheet with kind, and splitting the
+//! declaration from its gathering would scatter one fact.
 
 use crate::emit::{
     bool_cell, bool_cell_bytes, col_letters, f64_cell, f64_cell_bytes, header_cell,
@@ -20,11 +25,85 @@ pub enum Kind {
     Bool,
 }
 
+/// Fill colour from the fixed palette, in palette order. Colour is
+/// the fill axis; bold is the font axis; the two combine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Colour {
+    Red,
+    Green,
+    Amber,
+    Blue,
+    Purple,
+    Grey,
+}
+
+impl Colour {
+    /// 0-based palette position, the arithmetic basis of the
+    /// `cellXfs` index in `xl/styles.xml`.
+    pub fn index(self) -> usize {
+        match self {
+            Colour::Red => 0,
+            Colour::Green => 1,
+            Colour::Amber => 2,
+            Colour::Blue => 3,
+            Colour::Purple => 4,
+            Colour::Grey => 5,
+        }
+    }
+}
+
+/// Per-column style, declared once like kind: a bold flag plus an
+/// optional fill colour. Plain is `Style::default()`. Every value
+/// is representable in the styles part by construction, so style
+/// needs no validation.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Style {
+    pub bold: bool,
+    pub colour: Option<Colour>,
+}
+
+impl Style {
+    /// The `cellXfs` index for this style, or `None` for plain
+    /// (no `s` attribute): bold only is 1, colour `i` (0-based)
+    /// is `2 + 2i`, colour `i` bold is `3 + 2i`.
+    pub fn index(self) -> Option<usize> {
+        match (self.bold, self.colour) {
+            (false, None) => None,
+            (true, None) => Some(1),
+            (false, Some(colour)) => Some(2 + 2 * colour.index()),
+            (true, Some(colour)) => Some(3 + 2 * colour.index()),
+        }
+    }
+}
+
+/// Pre-spelled `s` attribute fragment for one column (` s="5"`,
+/// empty for plain), selected once per sheet per column from the
+/// fourteen spellings the styles part admits.
+pub fn style_fragment(style: Style) -> &'static str {
+    match (style.bold, style.colour) {
+        (false, None) => "",
+        (true, None) => " s=\"1\"",
+        (false, Some(Colour::Red)) => " s=\"2\"",
+        (true, Some(Colour::Red)) => " s=\"3\"",
+        (false, Some(Colour::Green)) => " s=\"4\"",
+        (true, Some(Colour::Green)) => " s=\"5\"",
+        (false, Some(Colour::Amber)) => " s=\"6\"",
+        (true, Some(Colour::Amber)) => " s=\"7\"",
+        (false, Some(Colour::Blue)) => " s=\"8\"",
+        (true, Some(Colour::Blue)) => " s=\"9\"",
+        (false, Some(Colour::Purple)) => " s=\"10\"",
+        (true, Some(Colour::Purple)) => " s=\"11\"",
+        (false, Some(Colour::Grey)) => " s=\"12\"",
+        (true, Some(Colour::Grey)) => " s=\"13\"",
+    }
+}
+
 /// One declared column: Excel order is declaration order.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Column {
     pub name: String,
     pub kind: Kind,
+    pub style: Style,
 }
 
 /// The i64 null: absence lives in the value's own bits.
@@ -144,12 +223,13 @@ impl ShapeKnowledge {
 /// First arena block when no hint is known; the arena grows from here.
 pub const ARENA_BLOCK: usize = 8192;
 
-/// One column for the drivers: name, declared kind, data.
+/// One column for the drivers: name, declared kind, style, data.
 /// Gathered once per sheet before the row loop.
 #[derive(Clone, Copy, Debug)]
 pub struct ColumnView<'a> {
     pub name: &'a str,
     pub kind: Kind,
+    pub style: Style,
     pub data: ColumnData<'a>,
 }
 
@@ -220,6 +300,7 @@ impl<'a> SheetTemplate for DynamicSheet<'a> {
             .map(|(col, data)| ColumnView {
                 name: &col.name,
                 kind: col.kind,
+                style: col.style,
                 data: *data,
             })
             .collect()
@@ -235,18 +316,22 @@ impl<'a> SheetTemplate for DynamicSheet<'a> {
 pub enum StaticColumn<const R: usize> {
     I64 {
         name: &'static str,
+        style: Style,
         data: [i64; R],
     },
     F64 {
         name: &'static str,
+        style: Style,
         data: [f64; R],
     },
     Str {
         name: &'static str,
+        style: Style,
         data: [Option<&'static str>; R],
     },
     Bool {
         name: &'static str,
+        style: Style,
         data: [Option<bool>; R],
     },
 }
@@ -267,6 +352,15 @@ impl<const R: usize> StaticColumn<R> {
             StaticColumn::F64 { .. } => Kind::F64,
             StaticColumn::Str { .. } => Kind::Str,
             StaticColumn::Bool { .. } => Kind::Bool,
+        }
+    }
+
+    pub fn style(&self) -> Style {
+        match self {
+            StaticColumn::I64 { style, .. } => *style,
+            StaticColumn::F64 { style, .. } => *style,
+            StaticColumn::Str { style, .. } => *style,
+            StaticColumn::Bool { style, .. } => *style,
         }
     }
 
@@ -308,6 +402,7 @@ impl<const C: usize, const R: usize> SheetTemplate for StaticSheet<C, R> {
             .map(|col| ColumnView {
                 name: col.name(),
                 kind: col.kind(),
+                style: col.style(),
                 data: col.data(),
             })
             .collect()
@@ -463,6 +558,10 @@ pub fn sheet_cap<T: SheetTemplate>(template: &T, nrows: usize, letters: &[String
     }
     cap += nrows * (16 + 7);
     for (view, letter) in views.iter().zip(letters.iter()) {
+        // Widest `s` spelling (` s="13"`, seven bytes with the
+        // leading space) per data cell in a styled column, blanks
+        // included; plain columns price nothing.
+        let style_widest: usize = if view.style.index().is_some() { 7 } else { 0 };
         match view.data {
             ColumnData::Str(v) => {
                 // Per cell: `<c r="` + letter + row digits (<=7) +
@@ -473,10 +572,17 @@ pub fn sheet_cap<T: SheetTemplate>(template: &T, nrows: usize, letters: &[String
                 for cell in v.iter() {
                     match cell {
                         Some(text) => {
-                            cap += letter.len() + 7 + 6 + 16 + 28 + 13 + 6 * text.chars().count();
+                            cap += letter.len()
+                                + 7
+                                + style_widest
+                                + 6
+                                + 16
+                                + 28
+                                + 13
+                                + 6 * text.chars().count();
                         }
                         None => {
-                            cap += letter.len() + 7 + 6 + 3;
+                            cap += letter.len() + 7 + style_widest + 6 + 3;
                         }
                     }
                 }
@@ -489,7 +595,7 @@ pub fn sheet_cap<T: SheetTemplate>(template: &T, nrows: usize, letters: &[String
                     Kind::Bool => 7,
                     Kind::Str => 0,
                 };
-                cap += nrows * (letter.len() + 7 + cell_tags + widest);
+                cap += nrows * (letter.len() + 7 + style_widest + cell_tags + widest);
             }
         }
     }
@@ -510,6 +616,9 @@ pub fn sheet_hint<T: SheetTemplate>(template: &T, letters: &[String]) -> Option<
     }
     hint += nrows * (16 + 7);
     for (view, letter) in views.iter().zip(letters.iter()) {
+        // The column's exact `s` spelling per data cell, so styled
+        // sheets reserve near their actual size.
+        let style_len: usize = style_fragment(view.style).len();
         match view.data {
             ColumnData::Str(v) => {
                 // Witnessed lengths: actual text bytes plus the
@@ -518,10 +627,10 @@ pub fn sheet_hint<T: SheetTemplate>(template: &T, letters: &[String]) -> Option<
                 for cell in v.iter() {
                     match cell {
                         Some(text) => {
-                            hint += letter.len() + 7 + 6 + 16 + 7 + 13 + text.len();
+                            hint += letter.len() + 7 + style_len + 6 + 16 + 7 + 13 + text.len();
                         }
                         None => {
-                            hint += letter.len() + 7 + 6 + 3;
+                            hint += letter.len() + 7 + style_len + 6 + 3;
                         }
                     }
                 }
@@ -534,7 +643,7 @@ pub fn sheet_hint<T: SheetTemplate>(template: &T, letters: &[String]) -> Option<
                     Kind::Bool => 6,
                     Kind::Str => 0,
                 };
-                hint += nrows * (letter.len() + 7 + 20 + expected);
+                hint += nrows * (letter.len() + 7 + style_len + 20 + expected);
             }
         }
     }
@@ -551,6 +660,11 @@ pub fn emit_sheet<T: SheetTemplate>(template: &T, nrows: usize) -> Result<Vec<u8
         r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>"#,
     );
     let views: Vec<ColumnView<'_>> = template.columns_view();
+    let gathered: Vec<(&ColumnView<'_>, &String, &'static str)> = views
+        .iter()
+        .zip(letters.iter())
+        .map(|(view, letter)| (view, letter, style_fragment(view.style)))
+        .collect();
     out.push_str("<row r=\"1\">");
     for (column, view) in views.iter().enumerate() {
         header_cell(&mut out, column, view.name);
@@ -564,12 +678,12 @@ pub fn emit_sheet<T: SheetTemplate>(template: &T, nrows: usize) -> Result<Vec<u8
         out.push_str("<row r=\"");
         out.push_str(&row_digits);
         out.push_str("\">");
-        for (view, letter) in views.iter().zip(letters.iter()) {
+        for (view, letter, fragment) in &gathered {
             match view.data {
-                ColumnData::I64(v) => i64_cell(&mut out, letter, &row_digits, v[r]),
-                ColumnData::F64(v) => f64_cell(&mut out, letter, &row_digits, v[r]),
-                ColumnData::Str(v) => str_cell(&mut out, letter, &row_digits, v[r]),
-                ColumnData::Bool(v) => bool_cell(&mut out, letter, &row_digits, v[r]),
+                ColumnData::I64(v) => i64_cell(&mut out, letter, &row_digits, fragment, v[r]),
+                ColumnData::F64(v) => f64_cell(&mut out, letter, &row_digits, fragment, v[r]),
+                ColumnData::Str(v) => str_cell(&mut out, letter, &row_digits, fragment, v[r]),
+                ColumnData::Bool(v) => bool_cell(&mut out, letter, &row_digits, fragment, v[r]),
             }
         }
         out.push_str("</row>");
@@ -594,6 +708,11 @@ pub fn emit_sheet_arena<T: SheetTemplate>(
             .as_bytes(),
     );
     let views: Vec<ColumnView<'_>> = template.columns_view();
+    let gathered: Vec<(&ColumnView<'_>, &String, &'static str)> = views
+        .iter()
+        .zip(letters.iter())
+        .map(|(view, letter)| (view, letter, style_fragment(view.style)))
+        .collect();
     out.extend_from_slice(b"<row r=\"1\">");
     for (column, view) in views.iter().enumerate() {
         header_cell_bytes(out, column, view.name);
@@ -609,12 +728,12 @@ pub fn emit_sheet_arena<T: SheetTemplate>(
         out.extend_from_slice(b"<row r=\"");
         out.extend_from_slice(&row_digits);
         out.extend_from_slice(b"\">");
-        for (view, letter) in views.iter().zip(letters.iter()) {
+        for (view, letter, fragment) in &gathered {
             match view.data {
-                ColumnData::I64(v) => i64_cell_bytes(out, letter, &row_digits, v[r]),
-                ColumnData::F64(v) => f64_cell_bytes(out, letter, &row_digits, v[r]),
-                ColumnData::Str(v) => str_cell_bytes(out, letter, &row_digits, v[r]),
-                ColumnData::Bool(v) => bool_cell_bytes(out, letter, &row_digits, v[r]),
+                ColumnData::I64(v) => i64_cell_bytes(out, letter, &row_digits, fragment, v[r]),
+                ColumnData::F64(v) => f64_cell_bytes(out, letter, &row_digits, fragment, v[r]),
+                ColumnData::Str(v) => str_cell_bytes(out, letter, &row_digits, fragment, v[r]),
+                ColumnData::Bool(v) => bool_cell_bytes(out, letter, &row_digits, fragment, v[r]),
             }
         }
         out.extend_from_slice(b"</row>");

@@ -6,7 +6,7 @@
 //! examples carry the error substring they must fail with and never
 //! reach a file.
 
-use thoth::contract::{Column, DynamicSheet, Kind};
+use thoth::contract::{Colour, Column, DynamicSheet, Kind, Style};
 use thoth::xlsx::ColumnData;
 
 /// One read-back cell value, by kind.
@@ -21,18 +21,22 @@ pub enum CellValue {
 pub enum ExampleColumn {
     I64 {
         name: String,
+        style: Style,
         data: Vec<i64>,
     },
     F64 {
         name: String,
+        style: Style,
         data: Vec<f64>,
     },
     Str {
         name: String,
+        style: Style,
         data: Vec<Option<&'static str>>,
     },
     Bool {
         name: String,
+        style: Style,
         data: Vec<Option<bool>>,
     },
 }
@@ -62,31 +66,35 @@ impl Example {
         self.columns
             .iter()
             .map(|c| match c {
-                ExampleColumn::I64 { name, data } => (
+                ExampleColumn::I64 { name, style, data } => (
                     Column {
                         name: name.clone(),
                         kind: Kind::I64,
+                        style: *style,
                     },
                     ColumnData::I64(data),
                 ),
-                ExampleColumn::F64 { name, data } => (
+                ExampleColumn::F64 { name, style, data } => (
                     Column {
                         name: name.clone(),
                         kind: Kind::F64,
+                        style: *style,
                     },
                     ColumnData::F64(data),
                 ),
-                ExampleColumn::Str { name, data } => (
+                ExampleColumn::Str { name, style, data } => (
                     Column {
                         name: name.clone(),
                         kind: Kind::Str,
+                        style: *style,
                     },
                     ColumnData::Str(data),
                 ),
-                ExampleColumn::Bool { name, data } => (
+                ExampleColumn::Bool { name, style, data } => (
                     Column {
                         name: name.clone(),
                         kind: Kind::Bool,
+                        style: *style,
                     },
                     ColumnData::Bool(data),
                 ),
@@ -102,10 +110,12 @@ pub fn ints_floats() -> Example {
         columns: vec![
             ExampleColumn::I64 {
                 name: "t".to_string(),
+                style: Style::default(),
                 data: vec![100, 200],
             },
             ExampleColumn::F64 {
                 name: "px".to_string(),
+                style: Style::default(),
                 data: vec![10.5, 11.0],
             },
         ],
@@ -124,10 +134,12 @@ pub fn nulls_blank() -> Example {
         columns: vec![
             ExampleColumn::I64 {
                 name: "t".to_string(),
+                style: Style::default(),
                 data: vec![100, thoth::contract::NULL_I64],
             },
             ExampleColumn::F64 {
                 name: "px".to_string(),
+                style: Style::default(),
                 data: vec![f64::NAN, 11.0],
             },
         ],
@@ -146,10 +158,12 @@ pub fn header_only() -> Example {
         columns: vec![
             ExampleColumn::I64 {
                 name: "t".to_string(),
+                style: Style::default(),
                 data: vec![],
             },
             ExampleColumn::F64 {
                 name: "px".to_string(),
+                style: Style::default(),
                 data: vec![],
             },
         ],
@@ -165,10 +179,12 @@ pub fn all_null_column() -> Example {
         columns: vec![
             ExampleColumn::I64 {
                 name: "t".to_string(),
+                style: Style::default(),
                 data: vec![thoth::contract::NULL_I64, thoth::contract::NULL_I64],
             },
             ExampleColumn::F64 {
                 name: "px".to_string(),
+                style: Style::default(),
                 data: vec![1.0, 2.0],
             },
         ],
@@ -185,6 +201,7 @@ pub fn wide() -> Example {
     let columns: Vec<ExampleColumn> = (0..30)
         .map(|i| ExampleColumn::I64 {
             name: format!("c{i}"),
+            style: Style::default(),
             data: vec![i as i64, -(i as i64)],
         })
         .collect();
@@ -221,10 +238,12 @@ pub fn tall(n: usize) -> Example {
         columns: vec![
             ExampleColumn::I64 {
                 name: "t".to_string(),
+                style: Style::default(),
                 data: t,
             },
             ExampleColumn::F64 {
                 name: "px".to_string(),
+                style: Style::default(),
                 data: px,
             },
         ],
@@ -243,6 +262,7 @@ pub fn tall_ints(n: usize) -> Example {
         name: "tall_ints",
         columns: vec![ExampleColumn::I64 {
             name: "t".to_string(),
+            style: Style::default(),
             data: t,
         }],
         expected,
@@ -260,6 +280,7 @@ pub fn tall_floats(n: usize) -> Example {
         name: "tall_floats",
         columns: vec![ExampleColumn::F64 {
             name: "px".to_string(),
+            style: Style::default(),
             data: px,
         }],
         expected,
@@ -274,10 +295,12 @@ pub fn ragged() -> Example {
         columns: vec![
             ExampleColumn::I64 {
                 name: "a".to_string(),
+                style: Style::default(),
                 data: vec![1, 2],
             },
             ExampleColumn::F64 {
                 name: "b".to_string(),
+                style: Style::default(),
                 data: vec![1.0],
             },
         ],
@@ -292,6 +315,7 @@ pub fn infinite() -> Example {
         name: "infinite",
         columns: vec![ExampleColumn::F64 {
             name: "px".to_string(),
+            style: Style::default(),
             data: vec![1.0, f64::INFINITY],
         }],
         expected: vec![],
@@ -307,18 +331,22 @@ pub fn mixed_kinds() -> Example {
         columns: vec![
             ExampleColumn::I64 {
                 name: "t".to_string(),
+                style: Style::default(),
                 data: vec![100, thoth::contract::NULL_I64, 300, 400],
             },
             ExampleColumn::F64 {
                 name: "px".to_string(),
+                style: Style::default(),
                 data: vec![10.5, f64::NAN, 12.25, 0.5],
             },
             ExampleColumn::Str {
                 name: "name".to_string(),
+                style: Style::default(),
                 data: vec![Some("a & <b> \"q\""), Some(""), None, Some(" pad ")],
             },
             ExampleColumn::Bool {
                 name: "ok".to_string(),
+                style: Style::default(),
                 data: vec![Some(true), Some(false), None, Some(true)],
             },
         ],
@@ -352,6 +380,65 @@ pub fn mixed_kinds() -> Example {
     }
 }
 
+/// Bold, colour, and bold-colour columns across mixed kinds
+/// (the reserved bold/colour example): styles ride in the column
+/// declarations; values round-trip unchanged.
+pub fn styled() -> Example {
+    Example {
+        name: "styled",
+        columns: vec![
+            ExampleColumn::I64 {
+                name: "t".to_string(),
+                style: Style {
+                    bold: true,
+                    colour: None,
+                },
+                data: vec![100, thoth::contract::NULL_I64, 300],
+            },
+            ExampleColumn::F64 {
+                name: "px".to_string(),
+                style: Style {
+                    bold: false,
+                    colour: Some(Colour::Red),
+                },
+                data: vec![10.5, f64::NAN, 12.25],
+            },
+            ExampleColumn::Str {
+                name: "name".to_string(),
+                style: Style {
+                    bold: true,
+                    colour: Some(Colour::Green),
+                },
+                data: vec![Some("a & b"), None, Some("")],
+            },
+            ExampleColumn::Bool {
+                name: "ok".to_string(),
+                style: Style {
+                    bold: false,
+                    colour: Some(Colour::Amber),
+                },
+                data: vec![Some(true), None, Some(false)],
+            },
+        ],
+        expected: vec![
+            vec![
+                Some(CellValue::Num(100.0)),
+                Some(CellValue::Num(10.5)),
+                Some(CellValue::Text("a & b".to_string())),
+                Some(CellValue::Bool(true)),
+            ],
+            vec![None, None, None, None],
+            vec![
+                Some(CellValue::Num(300.0)),
+                Some(CellValue::Num(12.25)),
+                Some(CellValue::Text(String::new())),
+                Some(CellValue::Bool(false)),
+            ],
+        ],
+        expect_error: None,
+    }
+}
+
 /// Every example in the store, in a stable order. `tall_n` sizes the
 /// tall example for the caller (tests keep it small).
 pub fn all(tall_n: usize) -> Vec<Example> {
@@ -365,6 +452,7 @@ pub fn all(tall_n: usize) -> Vec<Example> {
         tall_ints(tall_n),
         tall_floats(tall_n),
         mixed_kinds(),
+        styled(),
         ragged(),
         infinite(),
     ]

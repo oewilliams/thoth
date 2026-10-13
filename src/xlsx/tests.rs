@@ -1,5 +1,5 @@
 use super::{ColumnData, WriteError, XlsxError, archive_fits, build_workbook, build_xlsx};
-use crate::contract::{Column, DynamicSheet, Kind, sheet_cap, sheet_letters};
+use crate::contract::{Colour, Column, DynamicSheet, Kind, Style, sheet_cap, sheet_letters};
 
 #[test]
 fn too_large_states_the_ceiling() {
@@ -71,6 +71,7 @@ fn infinite_names_the_excel_row() {
         Column {
             name: "px".to_string(),
             kind: Kind::F64,
+            style: Style::default(),
         },
         ColumnData::F64(&px),
     )];
@@ -92,6 +93,7 @@ fn infinite_names_first_in_row_major_order() {
             Column {
                 name: "a".to_string(),
                 kind: Kind::F64,
+                style: Style::default(),
             },
             ColumnData::F64(&a),
         ),
@@ -99,6 +101,7 @@ fn infinite_names_first_in_row_major_order() {
             Column {
                 name: "b".to_string(),
                 kind: Kind::F64,
+                style: Style::default(),
             },
             ColumnData::F64(&b),
         ),
@@ -141,6 +144,7 @@ fn wrapper_matches_direct_workbook() {
         Column {
             name: "t".to_string(),
             kind: Kind::I64,
+            style: Style::default(),
         },
         ColumnData::I64(&t),
     )];
@@ -159,6 +163,7 @@ fn ragged_in_second_sheet_names_sheet_and_column() {
         Column {
             name: "t".to_string(),
             kind: Kind::I64,
+            style: Style::default(),
         },
         ColumnData::I64(&good_t),
     )];
@@ -167,6 +172,7 @@ fn ragged_in_second_sheet_names_sheet_and_column() {
             Column {
                 name: "a".to_string(),
                 kind: Kind::I64,
+                style: Style::default(),
             },
             ColumnData::I64(&a),
         ),
@@ -174,6 +180,7 @@ fn ragged_in_second_sheet_names_sheet_and_column() {
             Column {
                 name: "b".to_string(),
                 kind: Kind::F64,
+                style: Style::default(),
             },
             ColumnData::F64(&b),
         ),
@@ -218,6 +225,7 @@ fn sheet_cap_holds() {
             Column {
                 name: "t".to_string(),
                 kind: Kind::I64,
+                style: Style::default(),
             },
             ColumnData::I64(&empty_i),
         ),
@@ -225,6 +233,7 @@ fn sheet_cap_holds() {
             Column {
                 name: "px".to_string(),
                 kind: Kind::F64,
+                style: Style::default(),
             },
             ColumnData::F64(&empty_f),
         ),
@@ -239,6 +248,7 @@ fn sheet_cap_holds() {
                 Column {
                     name: format!("c{i}"),
                     kind: Kind::I64,
+                    style: Style::default(),
                 },
                 ColumnData::I64(d),
             )
@@ -255,6 +265,7 @@ fn sheet_cap_holds() {
             Column {
                 name: "t".to_string(),
                 kind: Kind::I64,
+                style: Style::default(),
             },
             ColumnData::I64(&tall_i),
         ),
@@ -262,6 +273,7 @@ fn sheet_cap_holds() {
             Column {
                 name: "px".to_string(),
                 kind: Kind::F64,
+                style: Style::default(),
             },
             ColumnData::F64(&tall_f),
         ),
@@ -279,6 +291,7 @@ fn sheet_cap_holds() {
             Column {
                 name: "ok".to_string(),
                 kind: Kind::Bool,
+                style: Style::default(),
             },
             ColumnData::Bool(&flags),
         ),
@@ -286,6 +299,7 @@ fn sheet_cap_holds() {
             Column {
                 name: "name".to_string(),
                 kind: Kind::Str,
+                style: Style::default(),
             },
             ColumnData::Str(&names),
         ),
@@ -293,11 +307,64 @@ fn sheet_cap_holds() {
             Column {
                 name: "long".to_string(),
                 kind: Kind::Str,
+                style: Style::default(),
             },
             ColumnData::Str(&owned_long),
         ),
     ];
     check(&mixed);
+    // Styled columns of every kind at the widest index (`s="13"`):
+    // bold-only, colour, and bold-colour, valued and blank.
+    let grey_bold: Style = Style {
+        bold: true,
+        colour: Some(Colour::Grey),
+    };
+    let styled_i: Vec<i64> = vec![1, i64::MIN, 3, 4];
+    let styled_f: Vec<f64> = vec![1.5, f64::NAN, 12.25, 0.5];
+    let styled: Vec<(Column, ColumnData<'_>)> = vec![
+        (
+            Column {
+                name: "t".to_string(),
+                kind: Kind::I64,
+                style: grey_bold,
+            },
+            ColumnData::I64(&styled_i),
+        ),
+        (
+            Column {
+                name: "px".to_string(),
+                kind: Kind::F64,
+                style: Style {
+                    bold: false,
+                    colour: Some(Colour::Purple),
+                },
+            },
+            ColumnData::F64(&styled_f),
+        ),
+        (
+            Column {
+                name: "name".to_string(),
+                kind: Kind::Str,
+                style: Style {
+                    bold: true,
+                    colour: None,
+                },
+            },
+            ColumnData::Str(&names),
+        ),
+        (
+            Column {
+                name: "ok".to_string(),
+                kind: Kind::Bool,
+                style: Style {
+                    bold: false,
+                    colour: Some(Colour::Red),
+                },
+            },
+            ColumnData::Bool(&flags),
+        ),
+    ];
+    check(&styled);
     // Escapable header names price at the escaped bound: a name of
     // repeated quotes escapes 6x per char, so the cap must cover it
     // (20 quotes read len 354 over the old cap 353 before the fix).
@@ -307,6 +374,7 @@ fn sheet_cap_holds() {
         Column {
             name: quoted_name,
             kind: Kind::I64,
+            style: Style::default(),
         },
         ColumnData::I64(&empty_q),
     )];
@@ -321,6 +389,7 @@ fn sheet_cap_holds() {
                 Column {
                     name: name.clone(),
                     kind: Kind::I64,
+                    style: Style::default(),
                 },
                 ColumnData::I64(data),
             )

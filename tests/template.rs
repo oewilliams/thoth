@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use thoth::contract::{
     ARENA_BLOCK, Column, DynamicSheet, Kind, ShapeKnowledge, SheetTemplate, StaticColumn,
-    StaticSheet, UnknownDimension, sheet_hint, sheet_letters,
+    StaticSheet, Style, UnknownDimension, sheet_hint, sheet_letters,
 };
 use thoth::xlsx::ColumnData;
 
@@ -23,6 +23,7 @@ fn sample_cols<'a>(t: &'a [i64], px: &'a [f64]) -> Vec<(Column, ColumnData<'a>)>
             Column {
                 name: "t".to_string(),
                 kind: Kind::I64,
+                style: Style::default(),
             },
             ColumnData::I64(t),
         ),
@@ -30,6 +31,7 @@ fn sample_cols<'a>(t: &'a [i64], px: &'a [f64]) -> Vec<(Column, ColumnData<'a>)>
             Column {
                 name: "px".to_string(),
                 kind: Kind::F64,
+                style: Style::default(),
             },
             ColumnData::F64(px),
         ),
@@ -99,10 +101,12 @@ fn static_bytes_match_dynamic_spelling() {
         [
             StaticColumn::I64 {
                 name: "t",
+                style: Style::default(),
                 data: [100, 200, 300],
             },
             StaticColumn::F64 {
                 name: "px",
+                style: Style::default(),
                 data: [10.5, 11.0, 12.25],
             },
         ],
@@ -126,10 +130,12 @@ fn static_example_round_trips_through_disk() {
         [
             StaticColumn::I64 {
                 name: "t",
+                style: Style::default(),
                 data: [100, 200, 300],
             },
             StaticColumn::F64 {
                 name: "px",
+                style: Style::default(),
                 data: [10.5, 11.0, 12.25],
             },
         ],
@@ -158,6 +164,7 @@ fn kind_mismatch_is_refused_at_the_boundary() {
         Column {
             name: "t".to_string(),
             kind: Kind::F64,
+            style: Style::default(),
         },
         ColumnData::I64(&t),
     )];
@@ -249,10 +256,12 @@ fn macro_expansions_match_handwritten_bytes() {
         [
             StaticColumn::I64 {
                 name: "t",
+                style: Style::default(),
                 data: [100, 200, 300],
             },
             StaticColumn::F64 {
                 name: "px",
+                style: Style::default(),
                 data: [10.5, 11.0, 12.25],
             },
         ],
