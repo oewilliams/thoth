@@ -263,10 +263,28 @@ pub fn all(tall_n: usize) -> Vec<Example> {
 /// (byte parsing, never string building) is what stands between the
 /// writer and a false green.
 pub fn read_sheet_values(path: &std::path::Path) -> Vec<Vec<Option<f64>>> {
+    read_sheet_values_by_index(path, 1)
+}
+
+/// Read back data cells from sheet `index` (1-based, declaration
+/// order) through the same independent stored-zip path as
+/// [`read_sheet_values`], which is the sheet-1 spelling of this.
+#[allow(dead_code)]
+pub fn read_sheet_values_by_index(path: &std::path::Path, index: usize) -> Vec<Vec<Option<f64>>> {
     let bytes = std::fs::read(path).unwrap();
-    let sheet =
-        find_stored_entry(&bytes, "xl/worksheets/sheet1.xml").expect("sheet part missing from zip");
+    let part: String = format!("xl/worksheets/sheet{index}.xml");
+    let sheet = find_stored_entry(&bytes, &part).expect("sheet part missing from zip");
     parse_data_rows(sheet)
+}
+
+/// Raw bytes of one stored part (e.g. `xl/workbook.xml`) through the
+/// same independent stored-zip walk.
+#[allow(dead_code)]
+pub fn read_part(path: &std::path::Path, name: &str) -> Vec<u8> {
+    let bytes = std::fs::read(path).unwrap();
+    find_stored_entry(&bytes, name)
+        .expect("part missing from zip")
+        .to_vec()
 }
 
 /// Walk stored local file headers for one entry's bytes. Stored only:

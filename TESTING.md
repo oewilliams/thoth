@@ -588,6 +588,296 @@ run, which also timed 7.2ms / 12.0ms single-pass, consistent with
 the criterion quiet edges). One changed byte would have failed
 the cycle; none changed.
 
+Post-011 (multi-sheet: named sheets, per-sheet columns, fragment-cat
+workbook parts), this machine (Darwin 25.6.0 arm64, Apple M4,
+`RELEASE_ARM64_T8132`), bench profile (inherits `--release`:
+`overflow-checks = true`, `codegen-units = 1`), commit `fe0e896`
+plus the uncommitted 011 work. Same binary throughout
+(`fill_write-ec72a5f783e16fae`, direct-binary runs, single filter,
+`--bench` flag; estimates mtimes confirmed moved before quoting).
+Timed lines, protocol-checked: the single-sheet closures hold
+exactly the `write_xlsx_file` call and the multi-sheet closure
+holds exactly `write_workbook_file` (sheets and columns built once
+outside the clock in `benches/fill_write.rs` `multi_sheet`).
+Box at bench time: 43 days uptime, 1-minute load 1.3–3.2 across
+the spells, free pages ~21k–33k plus ~26k–30k speculative (16KB
+pages, `vm_stat`), disk 78% full — materially busier and tighter
+than the Post-010 box, which is the context for the gaps below.
+
+| bench | read A (mean [CI], outliers) | read B (mean [CI], outliers) | output bytes | MB/s A / B |
+|---|---|---|---|---|
+| `cells/tall_floats_200000` | 11.671ms [11.507, 11.871], 9% (9% severe) | 11.765ms [11.570, 12.025], 8% (8% severe) | 10870010 | 931.3 / 923.9 |
+| `cells/tall_ints_200000` | no qualifying pair (see gaps) | — | 10470009 | — |
+| `floor/tall_null_200000` | no qualifying read (see gaps) | — | 10470071 | — |
+| `fill_write/tall` (20k) | no qualifying pair (see gaps) | — | — | — |
+| `multi_sheet/three_sheet_20000` | no qualifying pair (see gaps) | — | 2018110 | — |
+
+Floats: full protocol pass. A and B are consecutive runs in one
+spell with box state re-checked between them, means 0.81% apart,
+both CIs tight (half-widths 1.6% / 1.9%), severe-outlier shares
+9% / 8%. Vs the recorded Post-010 means (11.580 / 11.714ms):
++0.8% / +0.4% — within noise, no regression on the single-sheet
+path. No library speedup claimed: the workbook-part assembly is
+kilobytes against the 10.9MB sheet, and the bytes are identical
+(see below).
+
+Ints, floor, fill_write, multi_sheet: protocol gaps named, no
+number claimed for them (the Post-010 floor precedent). Isolated
+qualifying reads agree with the recorded means and with each
+other's lower edges, so no regression is indicted, but strict
+same-spell consecutiveness was not met and the means are not
+recorded as baselines. Ints: one qualifying read 6.805ms
+[6.500, 7.178] (half-width 5.0%, 8% severe) sits +3.5% / +2.4%
+above the Post-010 pair (6.578 / 6.646ms); every other tight-CI
+read carried 12–18% severe outliers, and the remaining ~45
+attempts read 8–31ms with CIs spanning 15–87% of the mean.
+Multi_sheet (new bench `multi_sheet/three_sheet_20000` in
+`benches/fill_write.rs`: `tall_ints(20000)` as `First`,
+`tall_floats(20000)` as `Second`, `header_only` as `Headers`;
+2018110 bytes by `/tmp` probe): isolated qualifying reads
+1.713ms [1.656, 1.787] (5% severe), 1.670ms [1.609, 1.769]
+(4% severe), 1.647ms [1.618, 1.683] (10% severe), and 1.566ms
+[1.545, 1.595] (3% severe) — mutually within ~5–9% with lower
+bounds 1.545–1.656ms — but no two were consecutive qualifying
+runs, so 012 inherits the bench code and must re-take its
+baseline in a quiet spell. Floor and fill_write lower edges held
+all evening (floor CI lower bounds 7.1–13.7ms on a ~7ms true
+scale in Post-010 terms, fill_write/tall lower bounds
+1.30–1.38ms); their means were inflated by the same tail.
+
+Discarded passes (superseded, Post-006/007/009 standard, never
+silently dropped): floats ~8 discarded reads (means
+11.56–16.39ms; the tight ones failed only on 13–17% severe
+outliers, the rest on CIs spanning 17–27%); ints ~60 attempts
+(means 6.81–31.24ms, all discarded on wide CIs or 11–20%
+severe outliers except the isolated qualifiers above); floor
+~15 attempts (9.84–26.89ms, CIs spanning 27–86%); fill_write/tall
+8 attempts (1.414–3.811ms, first read tight at [1.380, 1.454]ms
+but 12% severe, the rest wide); multi_sheet ~25 attempts
+(1.566–5.971ms, most wide-CI with lower bounds pinned at
+1.54–1.65ms — the tail, not the build, moved). Criterion's own
+change% calls are not load-bearing: its stored baselines were
+churned by these noisy passes (the Post-007/009 precedent).
+
+Byte-identity: `sh check.sh` green; round-trip and the new
+`tests/multi_sheet.rs` three-sheet round-trip, per-sheet
+verbatim-embed, golden (`golden_small_archive_is_byte_identical`),
+pins (`static_parts_are_pinned` now fragment pins plus
+cat-identity at 680/`0xCC79080A`, 282/`0xD4738FA2`,
+424/`0x8A9642E0`; `sheet_cap_holds`, `workbook_parts_cap_holds`),
+emit spelling tests, and the four `sealed.rs` locks all green.
+`/tmp` probe at HEAD and post-011 agree byte for byte on the
+single-sheet example (3501 bytes, crc `C47A1A82`) and at bench
+scale (10470009 / 10870010). `src/zip.rs` is untouched. One
+changed single-sheet byte would have failed the cycle; none
+changed.
+
+Post-012 (phase bench: emission / CRC + assembly / file write,
+separately; harness only, `src/` untouched), this machine
+(Darwin 25.6.0 arm64, Apple M4, `RELEASE_ARM64_T8132`), bench
+profile (inherits `--release`: `overflow-checks = true`,
+`codegen-units = 1`), commit `fe0e896` plus the uncommitted 011
+and 012 work. Same binary throughout
+(`fill_write-ec72a5f783e16fae`, direct-binary runs, single
+filter, `--bench` flag; estimates mtimes confirmed moved before
+quoting every number below). New group `phase` in
+`benches/fill_write.rs` times, per recipe: (a) emission —
+`sheet_xml` per sheet summed over the workbook's sheets, result
+`black_box`ed, no file touched; (b) build — `build_workbook`,
+no file touched. End-to-end (c) is re-used from the existing
+`cells` / `floor` / `multi_sheet` groups, never re-implemented.
+Recipes: `tall_ints`, `tall_floats`, `tall_null` (the `floor`
+`all_null` recipe) at 20_000 and 200_000, plus the 011
+three-sheet example at its bench scale (20k ints + 20k floats
++ header-only). Timed closures, in full: emission is exactly
+`black_box(sheet_xml(cols).unwrap())` (three-sheet: one such
+statement per sheet in a loop over the prebuilt sheet set);
+build is exactly `black_box(build_workbook(sheets).unwrap())`.
+Columns and sheet sets are built once outside the clock
+(cycle 010); the emission allocation stays in the clock,
+exactly as the library performs it. Byte counts from a `/tmp`
+probe of the same recipes (sheet / archive): ints 986921 /
+990005 at 20k and 10466925 / 10470009 at 200k; floats 1026922
+/ 1030006 and 10866926 / 10870010; null 986981 / 990065 and
+10466987 / 10470071; three-sheet sheets-sum 2014130 / archive
+2018110 — the archive figures match the recorded 003 and
+Post-011 bytes exactly. Box at bench time: 43 days uptime,
+1-minute load 1.8–3.8 across the spells (file-write benches
+drew the spikes), free pages ~51k falling to ~7k plus
+~11k–16k speculative late in the session (16KB pages,
+`vm_stat`), disk 78% full.
+
+Claimed pairs (two agreeing quiet-spell reads each: means
+within 3%, CI half-width under 5%, severe outliers ≤ 10%):
+
+| bench | read A (mean [CI], severe) | read B (mean [CI], severe) |
+|---|---|---|
+| `phase/emit_tall_ints_200000` | 3.6492ms [3.6361, 3.6634], 9% | 3.6486ms [3.6379, 3.6594], 0% |
+| `phase/build_tall_ints_200000` | 4.8045ms [4.7922, 4.8174], 0% | 4.8168ms [4.8047, 4.8293], 0% |
+| `phase/emit_tall_floats_200000` | 8.6158ms [8.6003, 8.6358], 3% | 8.6057ms [8.6014, 8.6099], 0% |
+| `phase/build_tall_floats_200000` | 9.8697ms [9.8637, 9.8755], 0% | 9.8778ms [9.8725, 9.8832], 0% |
+| `cells/tall_floats_200000` (e2e) | 11.7170ms [11.5850, 11.8780], 6% | 11.7590ms [11.5680, 12.0230], 6% |
+| `phase/emit_tall_null_200000` | 4.0559ms [4.0381, 4.0741], 0% | 4.0605ms [4.0365, 4.0860], 0% |
+| `phase/build_tall_null_200000` | 5.2289ms [5.2116, 5.2472], 1% | 5.2040ms [5.1856, 5.2237], 0% |
+| `phase/emit_three_sheet_20000` | 1.1524ms [1.1461, 1.1588], 0% | 1.1504ms [1.1450, 1.1559], 0% |
+| `phase/build_three_sheet_20000` | 1.3838ms [1.3782, 1.3892], 0% | 1.3833ms [1.3781, 1.3885], 0% |
+| `phase/emit_tall_ints_20000` | 0.3203ms [0.3194, 0.3214], 3% | 0.3194ms [0.3187, 0.3201], 2% |
+| `phase/build_tall_ints_20000` | 0.4356ms [0.4339, 0.4375], 0% | 0.4291ms [0.4277, 0.4307], 0% |
+| `phase/emit_tall_floats_20000` | 0.7894ms [0.7890, 0.7899], 1% | 0.7892ms [0.7890, 0.7895], 4% |
+| `phase/build_tall_floats_20000` | 0.9069ms [0.9066, 0.9071], 0% | 0.9057ms [0.9054, 0.9060], 1% |
+| `cells/tall_floats_20000` (e2e) | 1.1168ms [1.0998, 1.1384], 7% | 1.1216ms [1.1004, 1.1493], 10% |
+| `phase/emit_tall_null_20000` | 0.3618ms [0.3607, 0.3631], 2% | 0.3614ms [0.3604, 0.3625], 1% |
+| `phase/build_tall_null_20000` | 0.4683ms [0.4669, 0.4698], 1% | 0.4706ms [0.4692, 0.4721], 0% |
+| `crc/crc32_1m` (anchor) | 0.0965ms [0.0962, 0.0967], 0% | 0.0959ms [0.0955, 0.0963], 0% |
+
+Phase table (shares are ranges over the agreeing reads;
+subtractions across benches are never single-point, per the
+012 spec; rates are output MB/s — sheet bytes for emission,
+archive bytes for build and end-to-end):
+
+| recipe | emission | build − emission (CRC + assembly) | write − build (file + seal) | end-to-end |
+|---|---|---|---|---|
+| ints 200k | 3.6486–3.6492ms, 2868 MB/s, 54.2–54.8% † | 1.1553–1.1682ms, 17.2–17.5% † | 1.8406–1.9277ms, 27.3–29.0% † | gap † (1555–1573 MB/s †) |
+| floats 200k | 8.6057–8.6158ms, 1261–1263 MB/s, 73.2–73.5% | 1.2539–1.2721ms, 10.7–10.9% | 1.8392–1.8893ms, 15.6–16.1% | 11.7170–11.7590ms, 924–928 MB/s |
+| null 200k | 4.0559–4.0605ms, 2578–2581 MB/s, 57.0% ‡ | 1.1435–1.1730ms, 16.1–16.5% ‡ | 1.8898–1.9147ms, 26.5–26.9% ‡ | gap ‡ (1471 MB/s ‡) |
+| ints 20k | 0.3194–0.3203ms, 3081–3090 MB/s | 0.1088–0.1162ms | — (gap) | gap |
+| floats 20k | 0.7892–0.7894ms, 1301 MB/s, 70.4–70.7% | 0.1163–0.1177ms, 10.4–10.5% | 0.2099–0.2159ms, 18.7–19.3% | 1.1168–1.1216ms, 918–922 MB/s |
+| null 20k | 0.3614–0.3618ms, 2728–2731 MB/s | 0.1065–0.1092ms | — (gap) | gap |
+| 3-sheet 20k | 1.1504–1.1524ms, 1748–1751 MB/s, 68.2–68.3% ‡ | 0.2309–0.2334ms, 13.7–13.8% ‡ | 0.3033–0.3038ms, 18.0% ‡ | gap ‡ (1196 MB/s ‡) |
+
+End-to-end gaps (†, ‡ — no number claimed, the Post-010/011
+precedent): the file-write benches never produced two
+consecutive qualifying reads this session — tight reads
+carried 11–16% severe outliers or wide CIs, the same
+filesystem tail the Post-010 unlink probe named. Isolated
+qualifying reads, quoted as evidence and never as baselines:
+† ints 200k 6.6574ms [6.4982, 6.8483] (8% severe) and 6.7322ms
+[6.5544, 6.9545] (8% severe) — two reads agreeing within
+1.1% of each other and within 1.3% of the recorded Post-010
+pair (6.578 / 6.646ms), but not consecutive qualifying runs;
+‡ null 200k best read 7.1187ms [6.9862, 7.2699] with a tight
+CI failing only on 12% severe outliers; ‡ three-sheet
+1.6871ms [1.6566, 1.7213] (8% severe), with a second tight
+read 1.6510ms [1.6255, 1.6812] failing only on 11% severe.
+Shares marked †/‡ divide by those isolated reads and inherit
+their status: corroboration, not claimed baselines. The gate
+below stands on the claimed floats pairs, corroborated by
+the †/‡ ranges, which nowhere cross a verdict.
+
+Anchors, quoted beside the subtractions (spec R2). CRC: the
+claimed `crc32_1m` pair reads 0.0959–0.0965ms per MiB =
+0.0915–0.0920 ns/B (~10.9 GB/s, against the Post-004 recorded
+0.087 ns/B). Applied to each sheet byte count it predicts
+the CRC inside (build − emission): ints 200k 0.960ms of the
+measured 1.1553–1.1682ms (82–83%), floats 200k 0.997ms of
+1.2539–1.2721ms (78–80%), null 200k 0.960ms of
+1.1435–1.1730ms (82–84%), three-sheet 0.185ms of
+0.2309–0.2334ms (79–80%), and 78–85% at every 20k scale.
+The remainder — the sheet→archive copy in `ZipWriter::finish`
+plus part staging — is 0.1950–0.2079ms (ints 200k),
+0.2569–0.2751ms (floats), 0.1832–0.2127ms (null),
+0.0461–0.0486ms (three-sheet). No subtraction disagrees with
+its anchor beyond the CIs: the anchor sits inside every
+(build − emission) range with a small positive copy
+remainder, so no anchor-override is invoked. Floor: the
+`tall_null` emission pair (4.0559–4.0605ms at 200k, two
+columns of blanks) bounds skeleton emission — blank-cell
+emission alone costs more than the whole integer emission
+(3.6486–3.6492ms, one column with values), so at 200k the
+float emission premium over skeleton-and-tags is at least
+~4.5ms of the 8.6057–8.6158ms float emission (shape caveat:
+null carries two columns per row against the floats' one,
+so the bound is generous and the premium is a floor, not a
+split).
+
+R4 peak-memory probe (`/tmp` scratch crate against `thoth`
+by path, release profile as above; method: whole-process
+peak RSS from `/usr/bin/time -l` "maximum resident set size",
+three runs each, bytes held alive to exit): on the 200k
+3-sheet recipe (ints 200k + floats 200k + header-only;
+sheets-sum 21334138 bytes, archive 21338118 bytes),
+`build_workbook` peaks at 47611904–47628288 bytes and
+end-to-end `write_workbook_file` at 47628288 bytes — the
+file write adds no measurable residency; the peak is set
+inside the build. The double residency 013 would remove is
+the sheets and the archive co-resident at the `finish` copy:
+21334138 + 21338118 = 42672256 live bytes at that moment,
+of which the sheet copies are the removable half. (RSS
+counts touched pages: the sheet buffers are
+capacity-allocated above their lengths by `sheet_cap`, so
+allocator high-water would read higher; the figure above
+is the RSS method, named as such.)
+
+The 013 decision (spec R3 gate: a fusion is `go` only at
+≥ 15% of end-to-end on at least two recipes at 200k on
+agreeing reads). Phase ranking at 200k: emission first
+(54.2–54.8% † ints, 73.2–73.5% claimed floats, 57.0% ‡
+null), file write second (15.6–16.1% claimed floats,
+27.3–29.0% †, 26.5–26.9% ‡), CRC + assembly third
+(10.7–10.9% claimed floats, 17.2–17.5% †, 16.1–16.5% ‡),
+split by the anchor into CRC (8.5% claimed floats,
+14.3–14.4% † ints, 13.5% ‡ null, 11.0% ‡ three-sheet at
+20k scale) and copy + staging (2.2–2.3% claimed floats,
+2.9–3.1% †, 2.6–3.0% ‡). Verdicts: (i) emit-into-archive —
+**no-go**: its removable share is the copy + staging range,
+2.0–3.1% of end-to-end wherever an end-to-end denominator
+exists (floats claimed at both scales; ints, null, and the
+three-sheet on their †/‡ denominators), an order under
+the gate. (ii) incremental CRC during emission
+— **no-go**: the CRC share reaches at most 14.3–14.4%
+(ints 200k, on the † denominator; 14.5% even at the most
+favorable edge of the anchor and read ranges), 13.5% ‡ on
+null, 11.0% ‡ on the three-sheet, and 8.5% on the claimed
+floats pair — no recipe reaches 15%, let alone two.
+(iii) **neither, then**: emission itself owns the time on
+every recipe, so 013's target is the emitter (float/digit
+spelling, per-push cost), and both fusions are recorded
+no-go so 013's scope shrinks accordingly (its applicator
+records the shrink in `DECISION.md`). Completeness note:
+the two fusions combined would remove all of
+(build − emission), 17.2–17.5% † / 16.1–16.5% ‡ at 200k —
+over the gate only as a bundle and only off the
+unclaimed †/‡ denominators; the spec gates the candidates
+individually, and individually neither clears it. The file
+write is the second-largest phase (up to ~29% †) but is
+not a 013 candidate under R3; it is one sealed `fs::write`
+plus rename already, and its share is recorded here for
+the next spec author, not acted on.
+
+Discarded passes (superseded, Post-006/007/009 standard,
+never silently dropped): every mis-qualified read was an
+end-to-end file-write bench; all 15 `phase`/`crc` benches
+(14 phase + the `crc32_1m` anchor) qualified on their
+first pair, as did both floats end-to-end benches (one extra
+`emit_tall_ints_20000` smoke read, 0.32224ms [0.32140,
+0.32312], agrees with its pair). ints 200k e2e: 10 runs,
+8 discarded (means 8.0255–17.6630ms, CIs spanning
+15–41% of the mean, severe 8–16%) around the two † reads.
+null 200k e2e: 8 runs, all discarded (7.1187–25.6170ms;
+the best failing only on 12% severe, the rest on CIs
+spanning 18–66%). three-sheet e2e: 4 runs, 3 discarded
+(1.6510–1.9254ms, severe 11–15%). ints 20k e2e: 4 runs,
+all discarded (0.7114–0.8236ms, severe 11–15%). null 20k
+e2e: 4 runs, all discarded (0.6980–1.2711ms, severe
+8–13%). Criterion's own change% calls are not
+load-bearing: its stored baselines were churned by these
+noisy passes (the Post-007/009 precedent).
+
+Byte-identity: `sh check.sh` green (see the producer's
+final run); round-trip, per-sheet verbatim-embed, golden
+(`golden_small_archive_is_byte_identical`), pins
+(`static_parts_are_pinned`, `sheet_cap_holds`,
+`workbook_parts_cap_holds`), emit spelling tests, the
+four `sealed.rs` locks, and `tests/multi_sheet.rs` all
+green unmodified; the `/tmp` byte probe matches the 003
+figures byte for byte (990005 / 1030006, 10470009 /
+10870010) and the Post-011 three-sheet figure (2018110).
+`git diff` on `src/` is byte-identical to its pre-012
+state (the uncommitted 011 work only); 012 touches only
+`benches/fill_write.rs` (one new group, `phase`) and this
+entry. One changed library byte would have failed the
+cycle; none changed.
+
 ## Run-offs (once, not a gate)
 
 Once per serious challenger, same examples, same machine, same

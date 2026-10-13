@@ -13,8 +13,9 @@ primitives only, sealed file moves).
 
 * Input: borrowed columnar slices (`&[i64]` / `&[f64]`), checked
   rectangular once at the boundary.
-* Output: a stored (uncompressed) `.xlsx` — one sheet, frozen static
-  parts, two cell styles (default + bold header).
+* Output: a stored (uncompressed) `.xlsx` — multiple named sheets
+  with per-sheet columns, frozen static parts, two cell styles
+  (default + bold header).
 * Nulls: `i64::MIN` and NaN emit blank cells. Infinities stop the run
   with position — they have no Excel spelling. Ragged columns stop the
   run with the column name.
