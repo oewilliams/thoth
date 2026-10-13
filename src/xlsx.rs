@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 use crate::contract::{
     ARENA_BLOCK, Column, DynamicSheet, Kind, SheetTemplate, emit_sheet, emit_sheet_arena,
-    sheet_hint, sheet_letters, validate_template,
+    sheet_hint_witnessed, sheet_letters, validate_template, validate_template_witnessed,
 };
 use crate::static_parts::{RELS, STYLES};
 use crate::workbook_parts::{
@@ -459,12 +459,15 @@ pub fn build_workbook<T: SheetTemplate>(sheets: &[T]) -> Result<Vec<u8>, XlsxErr
     let names: Vec<&str> = sheets.iter().map(|sheet| sheet.sheet_name()).collect();
     validate_sheet_names(&names)?;
     let mut row_counts: Vec<usize> = Vec::with_capacity(sheets.len());
+    let mut escaped_totals: Vec<usize> = Vec::with_capacity(sheets.len());
     for sheet in sheets {
-        let nrows: usize = validate_template(sheet).map_err(|inner| XlsxError::InSheet {
-            sheet: sheet.sheet_name().to_string(),
-            inner: Box::new(inner),
-        })?;
+        let (nrows, escaped): (usize, usize) =
+            validate_template_witnessed(sheet).map_err(|inner| XlsxError::InSheet {
+                sheet: sheet.sheet_name().to_string(),
+                inner: Box::new(inner),
+            })?;
         row_counts.push(nrows);
+        escaped_totals.push(escaped);
     }
     let escaped: Vec<String> = sheets
         .iter()
@@ -494,7 +497,8 @@ pub fn build_workbook<T: SheetTemplate>(sheets: &[T]) -> Result<Vec<u8>, XlsxErr
         // length is witnessed only after emission and is checked
         // at the narrowing casts in `emit_parts`.
         sizes.push((0, name_len));
-        let hint: usize = sheet_hint(sheet, &letters[i]).unwrap_or(ARENA_BLOCK);
+        let hint: usize =
+            sheet_hint_witnessed(sheet, &letters[i], escaped_totals[i]).unwrap_or(ARENA_BLOCK);
         hint_sizes.push((hint, name_len));
     }
     // What is known exactly before emission is checked before

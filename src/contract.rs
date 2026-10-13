@@ -6,12 +6,13 @@
 //! STYLE rule 1 tripwire: this file passes 700 lines in cycle 018
 //! because `Colour`/`Style` are declared beside `Kind`/`Column` —
 //! style is gathered once per sheet with kind, and splitting the
-//! declaration from its gathering would scatter one fact.
+//! declaration from its gathering would scatter one fact. Cycle
+//! 020 grew it further (951 lines) with the witnessed scan.
 
 use crate::emit::{
     bool_cell, bool_cell_bytes, col_letters, f64_cell, f64_cell_bytes, header_cell,
     header_cell_bytes, i64_cell, i64_cell_bytes, push_usize, push_usize_bytes, str_cell,
-    str_cell_bytes,
+    str_cell_bytes, swar_count_byte, swar_word, swar_word_is_plain_ascii,
 };
 use crate::xlsx::{MAX_COLS, MAX_ROWS, XlsxError};
 use crate::zip::{CRC_INIT, crc32_finish, crc32_update};
@@ -422,6 +423,20 @@ pub fn sheet_letters<T: SheetTemplate>(template: &T) -> Vec<String> {
 /// limits, rectangular, declared kinds matching their data, and
 /// no infinite floats. Returns the data row count.
 pub fn validate_template<T: SheetTemplate>(template: &T) -> Result<usize, XlsxError> {
+    let (nrows, _escaped): (usize, usize) = validate_template_witnessed(template)?;
+    Ok(nrows)
+}
+
+/// The boundary check plus its witnessed escaped byte total:
+/// the exact escaped length of every string cell's payload,
+/// accumulated during the text scan that already visits those
+/// chars (never a second pass), for the arena reservation in
+/// [`sheet_hint_witnessed`]. On a refusal the total is
+/// discarded and unused: no reservation is taken from a
+/// refused sheet.
+pub fn validate_template_witnessed<T: SheetTemplate>(
+    template: &T,
+) -> Result<(usize, usize), XlsxError> {
     let views: Vec<ColumnView<'_>> = template.columns_view();
     if views.is_empty() {
         return Err(XlsxError::EmptyColumns);
@@ -473,10 +488,11 @@ pub fn validate_template<T: SheetTemplate>(template: &T) -> Result<usize, XlsxEr
             row: r + 2,
         });
     }
-    if let Some(err) = first_text_error(&views) {
+    let (text_err, escaped): (Option<XlsxError>, usize) = scan_text_cells(&views);
+    if let Some(err) = text_err {
         return Err(err);
     }
-    Ok(nrows)
+    Ok((nrows, escaped))
 }
 
 /// First string refusal in row-major order, or `None`: Excel's
@@ -490,31 +506,17 @@ pub fn validate_template<T: SheetTemplate>(template: &T) -> Result<usize, XlsxEr
 /// Everything else (other controls below 0x20, 0xFFFE, 0xFFFF)
 /// is refused. `char` in a `&str` is already a valid Unicode
 /// scalar, so surrogates and values past 0x10FFFF cannot occur.
-fn first_text_error(views: &[ColumnView<'_>]) -> Option<XlsxError> {
+fn scan_text_cells(views: &[ColumnView<'_>]) -> (Option<XlsxError>, usize) {
     let mut text_first: Option<(usize, usize, XlsxError)> = None;
+    let mut escaped_total: usize = 0;
     for (c, view) in views.iter().enumerate() {
         let ColumnData::Str(v) = view.data else {
             continue;
         };
         for (r, cell) in v.iter().enumerate() {
             let Some(text) = cell else { continue };
-            let mut len: usize = 0;
-            let mut bad: Option<char> = None;
-            for ch in text.chars() {
-                len += 1;
-                if bad.is_none() {
-                    let u: u32 = u32::from(ch);
-                    let valid: bool = u == 0x09
-                        || u == 0x0A
-                        || u == 0x0D
-                        || (0x20..=0xD7FF).contains(&u)
-                        || (0xE000..=0xFFFD).contains(&u)
-                        || (0x10000..=0x10FFFF).contains(&u);
-                    if !valid {
-                        bad = Some(ch);
-                    }
-                }
-            }
+            let (len, bad, escaped): (usize, Option<char>, usize) = scan_one_text(text);
+            escaped_total += escaped;
             let err: Option<XlsxError> = if len > 32_767 {
                 Some(XlsxError::TextTooLong {
                     column: view.name.to_string(),
@@ -537,7 +539,89 @@ fn first_text_error(views: &[ColumnView<'_>]) -> Option<XlsxError> {
             }
         }
     }
-    text_first.map(|(_, _, err)| err)
+    (text_first.map(|(_, _, err)| err), escaped_total)
+}
+
+/// One string cell under the boundary scan: its char count, its
+/// first invalid char, and its exact escaped byte length (the
+/// E1 witness, accumulated here where the chars are already
+/// visited). Plain-ASCII words ride the SWAR path (eight
+/// one-byte valid chars; escapable lanes counted in SWAR for
+/// the escaped length); every other char takes the spelled-out
+/// valid-range check above, and its escaped length is its
+/// entity length or its UTF-8 length.
+fn scan_one_text(text: &str) -> (usize, Option<char>, usize) {
+    let bytes: &[u8] = text.as_bytes();
+    let mut len: usize = 0;
+    let mut bad: Option<char> = None;
+    let mut escaped: usize = 0;
+    let mut i: usize = 0;
+    while i < bytes.len() {
+        // Plain-ASCII words need no per-char walk at all: eight
+        // one-byte valid chars, and the escaped length is eight
+        // plus each escapable lane's entity growth (`&` +4,
+        // `<`/`>` +3, `"`/`'` +5), counted per lane in SWAR.
+        if let Some(word) = swar_word(bytes, i)
+            && swar_word_is_plain_ascii(word)
+        {
+            len += 8;
+            escaped += 8
+                + 4 * swar_count_byte(word, b'&')
+                + 3 * (swar_count_byte(word, b'<') + swar_count_byte(word, b'>'))
+                + 5 * (swar_count_byte(word, b'"') + swar_count_byte(word, b'\''));
+            i += 8;
+            continue;
+        }
+        // A word the fast path refuses (or the short tail) is
+        // walked char by char exactly once, never retested.
+        let end: usize = usize::min(i + 8, bytes.len());
+        while i < end {
+            // One-byte chars spell themselves: valid exactly when
+            // tab, LF, CR, or at least 0x20 (0x7F included, inside
+            // 0x20..=0xD7FF), with the entity length on the byte.
+            if bytes[i] < 0x80 {
+                let byte: u8 = bytes[i];
+                len += 1;
+                escaped += match byte {
+                    b'&' => 5,
+                    b'<' | b'>' => 4,
+                    b'"' | b'\'' => 6,
+                    _ => 1,
+                };
+                if bad.is_none() && !(byte == 0x09 || byte == 0x0A || byte == 0x0D || byte >= 0x20)
+                {
+                    bad = Some(char::from(byte));
+                }
+                i += 1;
+                continue;
+            }
+            let Some(ch) = text[i..].chars().next() else {
+                break;
+            };
+            // (multi-byte char: spelled-out range check below)
+            len += 1;
+            escaped += match ch {
+                '&' => 5,
+                '<' | '>' => 4,
+                '"' | '\'' => 6,
+                _ => ch.len_utf8(),
+            };
+            if bad.is_none() {
+                let u: u32 = u32::from(ch);
+                let valid: bool = u == 0x09
+                    || u == 0x0A
+                    || u == 0x0D
+                    || (0x20..=0xD7FF).contains(&u)
+                    || (0xE000..=0xFFFD).contains(&u)
+                    || (0x10000..=0x10FFFF).contains(&u);
+                if !valid {
+                    bad = Some(ch);
+                }
+            }
+            i += ch.len_utf8();
+        }
+    }
+    (len, bad, escaped)
 }
 
 /// Worst-case sheet bytes (20 per `I64`, 327 per `F64`, the fixed
@@ -610,6 +694,30 @@ pub fn sheet_cap<T: SheetTemplate>(template: &T, nrows: usize, letters: &[String
 /// lengths — text bytes plus tags); `None` when a dimension
 /// is unknown.
 pub fn sheet_hint<T: SheetTemplate>(template: &T, letters: &[String]) -> Option<usize> {
+    sheet_hint_inner(template, letters, None)
+}
+
+/// The reservation with the string payload priced at its
+/// witnessed escaped length (from
+/// [`validate_template_witnessed`]) in place of the raw text
+/// bytes: escapable-heavy sheets reserve their actual size
+/// instead of growing into it. Numeric kinds keep their
+/// expected widths: no boundary scan visits their spelling,
+/// and witnessing one would add the pass this spelling rides.
+/// `None` when a dimension is unknown, like [`sheet_hint`].
+pub fn sheet_hint_witnessed<T: SheetTemplate>(
+    template: &T,
+    letters: &[String],
+    escaped_total: usize,
+) -> Option<usize> {
+    sheet_hint_inner(template, letters, Some(escaped_total))
+}
+
+fn sheet_hint_inner<T: SheetTemplate>(
+    template: &T,
+    letters: &[String],
+    witnessed: Option<usize>,
+) -> Option<usize> {
     let nrows: usize = template.shape().rows()?;
     template.shape().columns()?;
     let views: Vec<ColumnView<'_>> = template.columns_view();
@@ -626,11 +734,16 @@ pub fn sheet_hint<T: SheetTemplate>(template: &T, letters: &[String]) -> Option<
             ColumnData::Str(v) => {
                 // Witnessed lengths: actual text bytes plus the
                 // inline-string tags, per cell, so string sheets
-                // reserve near their actual size.
+                // reserve near their actual size. With a witnessed
+                // escaped total the payload bytes arrive as that
+                // one total instead of the raw per-cell lengths.
                 for cell in v.iter() {
                     match cell {
                         Some(text) => {
-                            hint += letter.len() + 7 + style_len + 6 + 16 + 7 + 13 + text.len();
+                            hint += letter.len() + 7 + style_len + 6 + 16 + 7 + 13;
+                            if witnessed.is_none() {
+                                hint += text.len();
+                            }
                         }
                         None => {
                             hint += letter.len() + 7 + style_len + 6 + 3;
@@ -649,6 +762,9 @@ pub fn sheet_hint<T: SheetTemplate>(template: &T, letters: &[String]) -> Option<
                 hint += nrows * (letter.len() + 7 + style_len + 20 + expected);
             }
         }
+    }
+    if let Some(escaped_total) = witnessed {
+        hint += escaped_total;
     }
     Some(hint)
 }
@@ -746,4 +862,90 @@ pub fn emit_sheet_arena<T: SheetTemplate>(
     out.extend_from_slice(b"</sheetData></worksheet>");
     crc_state = crc32_update(crc_state, &out[chunk_start..]);
     Ok(crc32_finish(crc_state))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Column, ColumnData, DynamicSheet, Kind, Style, validate_template_witnessed};
+    use crate::xlsx::XlsxError;
+
+    #[test]
+    fn witnessed_escaped_total_is_exact() {
+        let plain: String = "abcdefgh".repeat(10);
+        let cells: [Option<&str>; 3] = [Some("a&<b>"), Some(plain.as_str()), None];
+        let cols: Vec<(Column, ColumnData<'_>)> = vec![(
+            Column {
+                name: "s".to_string(),
+                kind: Kind::Str,
+                style: Style::default(),
+            },
+            ColumnData::Str(&cells),
+        )];
+        let sheet: DynamicSheet<'_> = DynamicSheet::known("data".to_string(), &cols);
+        let (nrows, escaped): (usize, usize) =
+            validate_template_witnessed(&sheet).expect("valid sheet");
+        assert_eq!(nrows, 3);
+        // "a&<b>" escapes to 1 + 5 + 4 + 1 + 4 = 15; the plain
+        // 80 chars witness 80; blank witnesses nothing.
+        assert_eq!(escaped, 15 + 80);
+        // Adjacent `target ^ 1` pairs must not double-count:
+        // each word below is one full plain-ASCII word, and
+        // its witnessed length is the per-char escaped length.
+        for (text, want) in [
+            ("&'&'&'&'", 44usize),
+            ("'&'&'&'&", 44),
+            ("&<>\"'&<>", 38),
+            ("aaa&'aaa", 17),
+            ("<=<=<=<=", 20),
+        ] {
+            let cells: [Option<&str>; 1] = [Some(text)];
+            let cols: Vec<(Column, ColumnData<'_>)> = vec![(
+                Column {
+                    name: "s".to_string(),
+                    kind: Kind::Str,
+                    style: Style::default(),
+                },
+                ColumnData::Str(&cells),
+            )];
+            let sheet: DynamicSheet<'_> = DynamicSheet::known("data".to_string(), &cols);
+            let (_, got): (usize, usize) =
+                validate_template_witnessed(&sheet).expect("valid sheet");
+            assert_eq!(got, want, "witness for {text:?}");
+        }
+    }
+
+    #[test]
+    fn swar_scan_still_refuses_past_plain_words() {
+        let mut text: String = "abcdefgh".repeat(20);
+        text.push('\u{1}');
+        let cells: [Option<&str>; 1] = [Some(text.as_str())];
+        let cols: Vec<(Column, ColumnData<'_>)> = vec![(
+            Column {
+                name: "s".to_string(),
+                kind: Kind::Str,
+                style: Style::default(),
+            },
+            ColumnData::Str(&cells),
+        )];
+        let sheet: DynamicSheet<'_> = DynamicSheet::known("data".to_string(), &cols);
+        match validate_template_witnessed(&sheet) {
+            Err(XlsxError::InvalidTextChar { row, .. }) => assert_eq!(row, 2),
+            other => panic!("want InvalidTextChar, got {other:?}"),
+        }
+        let long: String = "abcdefgh".repeat(5000);
+        let cells: [Option<&str>; 1] = [Some(long.as_str())];
+        let cols: Vec<(Column, ColumnData<'_>)> = vec![(
+            Column {
+                name: "s".to_string(),
+                kind: Kind::Str,
+                style: Style::default(),
+            },
+            ColumnData::Str(&cells),
+        )];
+        let sheet: DynamicSheet<'_> = DynamicSheet::known("data".to_string(), &cols);
+        match validate_template_witnessed(&sheet) {
+            Err(XlsxError::TextTooLong { len, .. }) => assert_eq!(len, 40_000),
+            other => panic!("want TextTooLong, got {other:?}"),
+        }
+    }
 }

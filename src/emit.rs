@@ -5,7 +5,8 @@
 //! STYLE rule 1 tripwire: this file passes 700 lines in cycle 018
 //! because each kind keeps a plain body (verbatim, so the plain
 //! path pays nothing measurable) beside an outlined styled body;
-//! the duplication is the measured price of that split.
+//! the duplication is the measured price of that split. Cycle 020
+//! grew it further (993 lines) with the shared SWAR escape scan.
 
 use std::fmt::Write as _;
 
@@ -24,18 +25,116 @@ pub fn col_letters(mut n: usize) -> String {
     s.iter().rev().map(|&b| b as char).collect()
 }
 
-/// Minimal XML escape for header text.
-pub fn escape_into(out: &mut String, text: &str) {
-    for c in text.chars() {
-        match c {
-            '&' => out.push_str("&amp;"),
-            '<' => out.push_str("&lt;"),
-            '>' => out.push_str("&gt;"),
-            '"' => out.push_str("&quot;"),
-            '\'' => out.push_str("&apos;"),
-            _ => out.push(c),
-        }
+/// SWAR word constants: one `0x01` / high bit per byte lane.
+const SWAR_ONES: u64 = 0x0101_0101_0101_0101;
+const SWAR_HIGHS: u64 = 0x8080_8080_8080_8080;
+
+/// Whether any byte lane of `word` equals `byte` (SWAR zero-byte
+/// detection: xor to zero the matching lane, then the classic
+/// `(x - ONES) & !x & HIGHS` test for a zero lane).
+fn swar_has_byte(word: u64, byte: u8) -> bool {
+    let x: u64 = word ^ (SWAR_ONES * u64::from(byte));
+    (x.wrapping_sub(SWAR_ONES) & !x & SWAR_HIGHS) != 0
+}
+
+/// How many lanes of `word` equal `byte`, exactly: the count
+/// uses a borrow-free zero-lane test (clear each lane's high
+/// bit, add `0x7F` per lane — no carry can escape a lane —
+/// then or-in the original high bit), so a lane is flagged
+/// zero exactly when it is zero. The classic
+/// `(x - ONES) & !x & HIGHS` mask is sound for existence
+/// ([`swar_has_byte`]) but not for counting: a borrow out of
+/// a true zero lane also flags a following lane holding
+/// `target ^ 1`, double-counting adjacent pairs such as
+/// `&'` for the first byte's target.
+pub(crate) fn swar_count_byte(word: u64, byte: u8) -> usize {
+    let x: u64 = word ^ (SWAR_ONES * u64::from(byte));
+    let nonzero: u64 =
+        ((x & 0x7F7F_7F7F_7F7F_7F7F).wrapping_add(0x7F7F_7F7F_7F7F_7F7F) | x) & SWAR_HIGHS;
+    ((!nonzero & SWAR_HIGHS).count_ones()) as usize
+}
+
+/// Whether `word` holds one of the five escapable bytes
+/// (`&`, `<`, `>`, `"`, `'` — all ASCII, so no lane of a
+/// multi-byte UTF-8 sequence can false-positive: continuation
+/// and lead bytes are all `>= 0x80`).
+pub(crate) fn swar_has_escapable(word: u64) -> bool {
+    swar_has_byte(word, b'&')
+        || swar_has_byte(word, b'<')
+        || swar_has_byte(word, b'>')
+        || swar_has_byte(word, b'"')
+        || swar_has_byte(word, b'\'')
+}
+
+/// The eight bytes starting at `i` as one little-endian word,
+/// or `None` when fewer than eight remain.
+pub(crate) fn swar_word(bytes: &[u8], i: usize) -> Option<u64> {
+    let chunk: &[u8; 8] = bytes.get(i..)?.first_chunk::<8>()?;
+    Some(u64::from_le_bytes(*chunk))
+}
+
+/// Whether `byte` is one of the five escapable bytes.
+fn is_escapable(byte: u8) -> bool {
+    matches!(byte, b'&' | b'<' | b'>' | b'"' | b'\'')
+}
+
+/// The entity spelling of one escapable byte.
+fn escape_entity(byte: u8) -> &'static str {
+    match byte {
+        b'&' => "&amp;",
+        b'<' => "&lt;",
+        b'>' => "&gt;",
+        b'"' => "&quot;",
+        _ => "&apos;",
     }
+}
+
+/// Minimal XML escape for header text: SWAR scan over the byte
+/// payload (eight bytes per word, safe Rust) skips clean words,
+/// and clean spans land with one append each; only the bytes of
+/// a word holding an escapable are walked one by one. A word is
+/// skipped only when it is plain ASCII (in addition to holding
+/// no escapable), so the skip's end is always a char boundary
+/// and every span sliced from `text` is a valid `str` slice;
+/// a word holding a multi-byte char is walked by whole chars.
+pub fn escape_into(out: &mut String, text: &str) {
+    let bytes: &[u8] = text.as_bytes();
+    let mut start: usize = 0;
+    let mut i: usize = 0;
+    while i < bytes.len() {
+        if let Some(word) = swar_word(bytes, i)
+            && swar_word_is_plain_ascii(word)
+            && !swar_has_escapable(word)
+        {
+            i += 8;
+            continue;
+        }
+        // A word holding an escapable (or the short tail) is
+        // walked exactly once, never retested: flush the
+        // clean span before it, then one append per char
+        // (spans inside a dirty word are short by
+        // construction, so slice appends lose to char appends).
+        out.push_str(&text[start..i]);
+        let end: usize = usize::min(i + 8, bytes.len());
+        while i < end {
+            if bytes[i] < 0x80 {
+                if is_escapable(bytes[i]) {
+                    out.push_str(escape_entity(bytes[i]));
+                } else {
+                    out.push(char::from(bytes[i]));
+                }
+                i += 1;
+            } else {
+                let Some(ch) = text[i..].chars().next() else {
+                    break;
+                };
+                out.push(ch);
+                i += ch.len_utf8();
+            }
+        }
+        start = i;
+    }
+    out.push_str(&text[start..]);
 }
 
 /// Header cell: bold (`s="1"`) inline string.
@@ -344,22 +443,49 @@ fn push_magnitude_bytes(out: &mut Vec<u8>, mag: u64) {
     out.extend_from_slice(&buf[i..]);
 }
 
+/// Whether every lane of `word` is a plain ASCII byte
+/// (`0x20..=0x7F`: valid one-byte chars, tab/LF/CR and every
+/// control below `0x20` excluded, so those fall back to the
+/// per-char walk). No lane has its high bit set, and adding
+/// `0x60` per lane sets the high bit exactly where the lane is
+/// at least `0x20` (no carry escapes a lane: `0x7F + 0x60`
+/// still fits one byte).
+pub(crate) fn swar_word_is_plain_ascii(word: u64) -> bool {
+    (word & SWAR_HIGHS) == 0 && ((word + 0x6060_6060_6060_6060) & SWAR_HIGHS) == SWAR_HIGHS
+}
+
 /// Header-text escape into a byte buffer: the same five spellings
-/// as [`escape_into`], fragments as byte constants.
+/// and SWAR span scan as [`escape_into`], fragments as byte
+/// constants and clean spans as byte slices.
 pub(crate) fn escape_into_bytes(out: &mut Vec<u8>, text: &str) {
-    for c in text.chars() {
-        match c {
-            '&' => out.extend_from_slice(b"&amp;"),
-            '<' => out.extend_from_slice(b"&lt;"),
-            '>' => out.extend_from_slice(b"&gt;"),
-            '"' => out.extend_from_slice(b"&quot;"),
-            '\'' => out.extend_from_slice(b"&apos;"),
-            _ => {
-                let mut buf: [u8; 4] = [0; 4];
-                out.extend_from_slice(c.encode_utf8(&mut buf).as_bytes());
-            }
+    let bytes: &[u8] = text.as_bytes();
+    let mut start: usize = 0;
+    let mut i: usize = 0;
+    while i < bytes.len() {
+        if let Some(word) = swar_word(bytes, i)
+            && !swar_has_escapable(word)
+        {
+            i += 8;
+            continue;
         }
+        // A word holding an escapable (or the short tail) is
+        // walked byte by byte exactly once, never retested:
+        // flush the clean span before it, then one append per
+        // byte (spans inside a dirty word are short by
+        // construction, so slice appends lose to byte appends).
+        out.extend_from_slice(&bytes[start..i]);
+        let end: usize = usize::min(i + 8, bytes.len());
+        while i < end {
+            if is_escapable(bytes[i]) {
+                out.extend_from_slice(escape_entity(bytes[i]).as_bytes());
+            } else {
+                out.push(bytes[i]);
+            }
+            i += 1;
+        }
+        start = i;
     }
+    out.extend_from_slice(&bytes[start..]);
 }
 
 /// Header cell into a byte buffer: byte-identical to
@@ -572,10 +698,71 @@ fn str_cell_bytes_styled(
 #[cfg(test)]
 mod tests {
     use super::{
-        NULL_I64, bool_cell, bool_cell_bytes, col_letters, f64_cell, f64_cell_bytes, header_cell,
-        header_cell_bytes, i64_cell, i64_cell_bytes, push_i64, push_i64_bytes, str_cell,
-        str_cell_bytes,
+        NULL_I64, bool_cell, bool_cell_bytes, col_letters, escape_into, escape_into_bytes,
+        f64_cell, f64_cell_bytes, header_cell, header_cell_bytes, i64_cell, i64_cell_bytes,
+        push_i64, push_i64_bytes, str_cell, str_cell_bytes,
     };
+
+    /// The SWAR escape spelling pinned literally (both sinks
+    /// now share the scan, so the oracle comparison below
+    /// cannot pin it alone): escapables on and across word
+    /// boundaries, multi-byte text, and the empty text.
+    #[test]
+    fn escape_spelling_is_pinned() {
+        let cases: [(&str, &str); 7] = [
+            ("", ""),
+            ("plain", "plain"),
+            ("1234567&", "1234567&amp;"),
+            ("12345678&", "12345678&amp;"),
+            ("12345678<abcdefg>", "12345678&lt;abcdefg&gt;"),
+            (
+                "abcdefgh&ijklmnop<qrstuvwx>yz\"'£&end",
+                "abcdefgh&amp;ijklmnop&lt;qrstuvwx&gt;yz&quot;&apos;£&amp;end",
+            ),
+            ("&<>\"'", "&amp;&lt;&gt;&quot;&apos;"),
+        ];
+        for (text, want) in cases {
+            let mut s = String::new();
+            escape_into(&mut s, text);
+            assert_eq!(s, want, "string sink {text:?}");
+            let mut b: Vec<u8> = Vec::new();
+            escape_into_bytes(&mut b, text);
+            assert_eq!(b, want.as_bytes(), "byte sink {text:?}");
+        }
+        // Multi-byte chars straddling an 8-byte word boundary
+        // at every straddle offset, with and without an
+        // escapable in a following word: the clean-word skip
+        // must never land mid-char. Expected output is built
+        // char by char here, never through the SWAR scan.
+        for ch in ["\u{00A3}", "\u{20AC}", "\u{1F600}"] {
+            for prefix_len in 0usize..8 {
+                for tail in ["abcdefgh", "abcdefgh&", "hijklm&nop"] {
+                    let text: String = format!("{}{ch}{tail}", "a".repeat(prefix_len));
+                    let mut want = String::new();
+                    for c in text.chars() {
+                        match c {
+                            '&' => want.push_str("&amp;"),
+                            '<' => want.push_str("&lt;"),
+                            '>' => want.push_str("&gt;"),
+                            '"' => want.push_str("&quot;"),
+                            '\'' => want.push_str("&apos;"),
+                            _ => want.push(c),
+                        }
+                    }
+                    let mut s = String::new();
+                    escape_into(&mut s, &text);
+                    assert_eq!(s, want, "string sink straddle {text:?}");
+                    let mut b: Vec<u8> = Vec::new();
+                    escape_into_bytes(&mut b, &text);
+                    assert_eq!(b, want.as_bytes(), "byte sink straddle {text:?}");
+                }
+            }
+        }
+        let long_plain: String = "abcdefgh".repeat(40);
+        let mut s = String::new();
+        escape_into(&mut s, &long_plain);
+        assert_eq!(s, long_plain);
+    }
 
     #[test]
     fn letters_roll_over_z() {

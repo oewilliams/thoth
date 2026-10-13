@@ -1381,6 +1381,144 @@ per-process best builds agreeing on every recipe: no regression
 beyond the interleaved spread is read, and no speedup is
 claimed.
 
+Post-020 (arena access patterns: layout round two), this
+machine (Darwin 27.0.0 arm64, Apple M4, `RELEASE_ARM64_T8132`),
+bench profile (inherits `--release`: `overflow-checks = true`,
+`codegen-units = 1`), rustc 1.93.1, commit `a0fddc9` plus the
+uncommitted 020 work. All probes are `/tmp/probe020` scratch
+binaries (switchable variants in one binary, alternating order,
+5–7 rounds, medians; every figure below is two agreeing full
+probe runs unless a third read is quoted). Data preparation is
+outside every clock; the timed call is `build_workbook` unless
+a phase is named. Byte identity (R1) was asserted before any
+timing on every recipe below.
+
+Verdicts, one per candidate:
+
+- **E1 — witnessed reservation: shipped for strings only.**
+  The boundary text scan now accumulates the exact escaped
+  byte length of every string cell (`scan_one_text` in
+  `src/contract.rs`; SWAR lane counts on plain-ASCII words,
+  per-char on the rest) and `validate_template_witnessed`
+  threads the total to `sheet_hint_witnessed`, which prices
+  string payload at the witnessed total in place of the raw
+  text bytes. The witness rides the existing pass, never a
+  second one: in the scratch probe the char-loop scan
+  carrying the witness read at or below the same scan
+  without it (long CF-like 9.53–9.57ms against
+  19.02–19.09ms), and the shipped SWAR spelling of that
+  scan is the E4 read below. Retained capacity (returned
+  `Vec` capacity / archive length, known shape): the
+  escapable-heavy recipe (20,000 strings `a&b<c>"q" … &<>`)
+  moves 3,689,890 / 2,342,642 (1.575x) at HEAD to 2,444,945
+  (1.044x); at 200,000 strings, length 23,882,646, capacity
+  37,009,890 (1.550x) at HEAD to 24,504,945 (1.026x). Peak
+  RSS on that 200k recipe (`/usr/bin/time -l`, one build held
+  to exit, two processes per side) does not move: 58,376,192
+  bytes on both trees — the input strings dominate the peak,
+  so the win is retained capacity, not peak. Plain strings
+  are unchanged (1.064x both trees) and numeric recipes keep
+  their HEAD capacities exactly. The numeric half is
+  rejected with its numbers: an `f64` spelling witness would
+  format every value at the boundary (infinity scan alone
+  0.134ms per 200,000 floats; scan-plus-`Display` ~9.5ms —
+  the emit formatting paid twice), and no boundary scan
+  visits `i64` at all, so its witness would be a new pass
+  (digit-length pass 0.388ms per 200,000). Expected widths
+  (10 `I64`, 12 `F64`) stay.
+- **E2 — row working set: rejected.** The cheap-sink
+  simulation (fixed cell templates, emit plus fold) read the
+  staged spelling faster on wide rows (0.79–0.80x) and slower
+  on narrow (1.04–1.07x), but the end-to-end read — a scratch
+  tree copy staging rows at a declared 64-column threshold,
+  interleaved in one binary against the direct spelling —
+  reverses the wide result: bucket (8,880 x 1,298 `0.0`)
+  direct 293.2 / 295.3ms against staged 309.9 / 309.3ms
+  (1.057 / 1.048), liability-like (567 x 1,918) 34.6 / 35.1ms
+  against 35.7 / 36.2ms (1.031 / 1.030), byte-identical on
+  both shapes. With real per-cell formatting the extra copy
+  is the cost the SPEC presumed; no staged code is in tree.
+- **E3 — wide-sheet gather: rejected.** Safe-Rust
+  touch-ahead (a `black_box` load of row `r + D` per column)
+  in the gather simulation: bucket shape (2,000 x 1,298,
+  cheap sink) 4.03–4.06ms baseline against 5.90–5.91ms at
+  distance 8 (1.457–1.463) and 5.52–5.59ms at 32
+  (1.372–1.383); liability shape (567 x 1,918) 0.70ms
+  against 1.48–1.50ms (2.108–2.121). The only safe spelling
+  that emits a load also emits the barrier per cell; a plain
+  read is optimised away and emits nothing. No code in tree.
+- **E4 — escape scan width: shipped.** `escape_into` /
+  `escape_into_bytes` and the boundary scan share the SWAR
+  spelling in `src/emit.rs` (safe Rust, one 8-byte word per
+  step): clean words land as one span append, a dirty word
+  is walked once byte by byte, and the boundary scan counts
+  escapable lanes in SWAR on plain-ASCII words. Scratch
+  escape reads (SWAR against the char loop, medians of 7):
+  long CF-like (2,000 x 4,200B) 15.61–15.89ms to 1.17–1.18ms
+  (0.074–0.075), short 12B (200,000x) 4.87–4.95ms to
+  1.41–1.48ms (0.289–0.300), escapable-heavy (2,000 x
+  1,600B, ~35% escapable) 4.22–4.34ms to 4.56–4.63ms
+  (1.069–1.080 — the named worst case, recovered end to end
+  below). Boundary validity reads: long 19.17–19.18ms to
+  0.92–0.96ms (0.048–0.050), short 2.86–2.88ms to
+  0.99–1.05ms (0.346–0.364). End to end the heavy recipe is
+  at parity (20,000-string build, final against HEAD:
+  1.018–1.020 across two dedicated reads; validity alone
+  0.394x), and long-string builds move 243–248ms to
+  33–35ms (0.134–0.140, 20,000 multi-KB `CF:`-like strings,
+  85,362,643 archive bytes, identical). Assembly claim
+  (release aarch64, `--emit asm`): `escape_into_bytes` loads
+  one `ldr x` per 8-byte word with `eor`/`sub` SWAR lane
+  tests and no per-char decode or call on clean words —
+  scalar SWAR by design, the claim is 8 bytes per load plus
+  span appends, not NEON. Correctness is pinned literally
+  in `escape_spelling_is_pinned` (both sinks, word-boundary
+  escapables, multi-byte text) because the two sinks now
+  share the scan and cannot pin each other.
+- **E5 — CRC fold granularity: rejected.** The isolated
+  fold sweep (pre-materialised bytes) favoured batching on
+  narrow rows (53B rows, 200,000: per-row 1.498–1.503ms,
+  per-16 0.913–0.917ms, per-64 0.903ms, one-shot 0.901ms)
+  and read parity on wide rows (35,066B rows: 0.990–1.002
+  at every split; the CRC is identical under any split,
+  pinned by `crc_update_any_split`). In situ the result
+  reverses: the same tree at a 4,096-byte threshold against
+  HEAD read ints 1.035, floats 1.055, null 1.101, while
+  per-row folding on the shipped tree straddles parity
+  (below). Folding each row while its bytes are hot beats
+  the call traffic it costs; `src/zip.rs` and the per-row
+  fold in `emit_sheet_arena` are untouched.
+
+Byte identity (R1), whole-archive comparison against a
+`git archive` HEAD extraction (stored bytes, so whole-archive
+equality is part-by-part equality): ints, floats, null,
+mixed, escapable-heavy and long-string recipes at 200,000
+rows (10,471,536 / 10,871,537 / 10,471,598 / 35,627,280 /
+2,342,642 at 20k / 85,362,643 archive bytes), the bucket
+shape (8,880 x 1,298, 303,564,288 bytes), liability-like
+(567 x 1,918, 29,391,609), ByAsset-like (104 x 2,000 with
+six long-string columns, 30,589,564), three-sheet (20k) and
+a styled sheet — identical on every recipe. The gate's
+golden, verbatim-embed, styles and `sheet_cap_holds` pins
+are green unmodified.
+
+Existing recipes against HEAD (R3), interleaved in one
+binary, three reads on the shipped tree (medians, final /
+HEAD): ints 0.945 / 1.005 / 1.004, floats 0.981 / 0.945 /
+1.035, null 0.924 / 1.007 / 1.037 — the narrow medians
+straddle parity and the round ranges overlap on every read,
+so no narrow regression is read beyond the interleaved
+spread and none is claimed as a speedup. String-bearing
+recipes move with E4/E1: mixed (four kinds, 200,000 rows)
+0.824 / 0.818 / 0.812, long-string 0.134–0.140,
+escapable-heavy 1.018–1.020 (named: at parity, the E4
+worst case). No speed claim beyond these reads. `sh
+check.sh` green (format, 40 unit tests plus the integration
+suites including the two new witness/scan tests, clippy
+`-D warnings`, docs). One scoped-file note: the fold
+sentence in `DESIGN.md` still says "folded per emitted
+row", which remains literally true — E5 shipped nothing.
+
 ## Run-offs (once, not a gate)
 
 Once per serious challenger, same examples, same machine, same
