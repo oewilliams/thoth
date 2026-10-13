@@ -322,18 +322,24 @@ pub fn validate_template<T: SheetTemplate>(template: &T) -> Result<usize, XlsxEr
         return Err(XlsxError::TooManyRows(nrows));
     }
     // Values are checked here, at the boundary; past it the data
-    // is bits. First infinite in row-major order names the refusal.
-    for r in 0..nrows {
-        for view in &views {
-            if let ColumnData::F64(v) = view.data
-                && v[r].is_infinite()
-            {
-                return Err(XlsxError::Infinite {
-                    column: view.name.to_string(),
-                    row: r + 2,
-                });
-            }
+    // is bits. Each float column is scanned contiguously (benched
+    // faster than the row-major stride at every shape); the first
+    // infinite in row-major order is rebuilt from the per-column
+    // firsts, earliest column winning a tied row.
+    let mut first: Option<(usize, usize)> = None;
+    for (c, view) in views.iter().enumerate() {
+        if let ColumnData::F64(v) = view.data
+            && let Some(r) = v.iter().position(|x| x.is_infinite())
+            && first.is_none_or(|(fr, _)| r < fr)
+        {
+            first = Some((r, c));
         }
+    }
+    if let Some((r, c)) = first {
+        return Err(XlsxError::Infinite {
+            column: views[c].name.to_string(),
+            row: r + 2,
+        });
     }
     Ok(nrows)
 }
