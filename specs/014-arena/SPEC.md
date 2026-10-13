@@ -50,6 +50,30 @@ residency gone. Its byte emitter was deliberately untuned and
 lost to the `String` emitter on ints and nulls, so the prototype
 numbers are a floor for the shape, not its tuned result.
 
+## Prototype rounds (scratch evidence, `/tmp/thoth-r1`)
+
+Alternatives were raced in an interleaved A/B harness (rotating
+order, medians of rounds; sequential Criterion runs on this box
+drifted enough to flip verdicts, and are not evidence here):
+
+- **Reservation:** hint-sized and upper-bound reservations tie on
+  time (within 0.2%); growth from empty loses the arena's whole
+  advantage (parity with the current path). Retained capacity at
+  200k mixed rows: exact 16.9 MB (current), hint 20.2 MB,
+  upper-bound 84.8 MB for the same 16.9 MB archive. The hint is
+  therefore the reservation; the upper bound remains a proof, and
+  growth is the unknown-dimension fallback, priced as parity.
+- **CRC granularity:** per-row folding beats whole-sheet
+  (ints 4.43 vs 4.93 ms) and 64 KB chunks (5.00 ms) at 200k on
+  every recipe. Per-row it is.
+- **Byte emitter:** a tuned byte spelling is at parity with the
+  `String` oracle (ints/nulls ~2% slower, floats ~3% faster,
+  interleaved medians) — the arena's win comes from layout and
+  folding, not emitter superiority. R4's parity bar stands.
+- **Combined winners** (hint + per-row fold + tuned bytes),
+  build-only at 200k vs current: ints ~11% faster, floats ~9%,
+  nulls ~3%; peak RSS 39.1 MB -> 22.1 MB, repeated.
+
 ## Requirements (each item testable)
 
 - **R1 — Arena builder.** `build_workbook` emits into one buffer:
